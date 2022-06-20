@@ -303,14 +303,14 @@ fn main() -> Result<()> {
     }?;
 
     let resource_table_start = resource_table.virtual_address as usize;
-    let resource_table_size = resource_table.size as usize;
+    let resource_table_end = resource_table_start + resource_table.size as usize;
 
     let mut resource_section: Option<goblin::pe::section_table::SectionTable> = None;
 
     // PE section names are mostly meaningless, so looking for the ".rsrc" section by name may not work
     for section in pe.sections {
         if section.virtual_address as usize >= resource_table_start
-            && section.virtual_size as usize >= resource_table_size
+            && (section.virtual_address + section.virtual_size) as usize <= resource_table_end
         {
             resource_section = Some(section);
             break;
@@ -324,65 +324,23 @@ fn main() -> Result<()> {
     // because the resource table will start will start exactly at the start of the section
     let offset = resource_table_start - resource_section_table.virtual_address as usize
         + resource_section_table.pointer_to_raw_data as usize;
-    let end = offset + resource_table_size;
+    let end = offset + resource_section_table.virtual_size as usize;
     let section_name = resource_section_table.name()?;
 
-    let resource_data = &buf[offset..end];
-
     let resources = ImageResourceEntry::parse(
-        resource_data,
+        &buf[offset..end],
         0,
         ResourceIdType::Name(section_name.to_string()),
     );
 
-    let wevt_template = match &resources {
-        ImageResourceEntry::Directory(root) => root
-            .sub_directories
-            .iter()
-            .filter(|entry| match entry {
-                ImageResourceEntry::Directory(dir) => match &dir.id {
-                    ResourceIdType::Name(name) => name == "WEVT_TEMPLATE",
-                    _ => false,
-                },
-                _ => false,
-            })
-            .next(),
-        _ => None,
-    };
-
-    let _pmres_data = match &wevt_template {
-        Some(directory) => match &directory {
-            ImageResourceEntry::Directory(dir) => match dir
-                .sub_directories
-                .iter()
-                .filter(|entry| match entry {
-                    ImageResourceEntry::Directory(dir2) => match &dir2.id {
-                        ResourceIdType::Id(id) => *id == 1,
-                        _ => false,
-                    },
-                    _ => false,
-                })
-                .next()
-                .unwrap()
-            {
-                ImageResourceEntry::Directory(dir3) => Some(&dir3.sub_directories[0]),
-                _ => None,
-            },
-            _ => None,
-        },
-        _ => None,
-    }
-    .ok_or(PEError::NoResourceTable())?;
-
     let pmres_data2 = resources.find(&"WEVT_TEMPLATE", &"#1");
     let pmres_resource_data = pmres_data2.ok_or(PEError::NoResourceTable())?;
 
-    let rva_to_va_offset = (resource_section_table.virtual_address - resource_section_table.pointer_to_raw_data) as usize;
-    let pmres = &buf[pmres_resource_data.rva_to_data - rva_to_va_offset..pmres_resource_data.rva_to_data - rva_to_va_offset + pmres_resource_data.data_size];
+    let rva_to_va_offset = (resource_section_table.virtual_address
+        - resource_section_table.pointer_to_raw_data) as usize;
+    let pmres = &buf[pmres_resource_data.rva_to_data - rva_to_va_offset
+        ..pmres_resource_data.rva_to_data - rva_to_va_offset + pmres_resource_data.data_size];
 
-    //println!("Resource {:?}", resources);
-    //println!("pmres {:?}", _pmres_data);
-    //println!("pmres2 {:?}", pmres_resource_data);
     println!("pmres header: {:?}", std::str::from_utf8(&pmres[0..4])?);
 
     Ok(())
