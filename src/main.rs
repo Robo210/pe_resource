@@ -67,7 +67,7 @@ struct ImageResourceDirectoryEntry {
     _id: ResourceIdType,
     _code_page: u32,
     rva_to_data: usize, // relative to the start of the PE
-    _data_size: usize,
+    data_size: usize,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -186,7 +186,7 @@ impl ImageResourceEntry {
                     _id: id,
                     _code_page: code_page,
                     rva_to_data,
-                    _data_size: data_size,
+                    data_size,
                 }));
             } else {
                 // entry is another directory
@@ -320,12 +320,14 @@ fn main() -> Result<()> {
     let resource_section_table =
         resource_section.expect("could not find section that holds the resource table");
 
+    // offset will almost always == resource_section_table.pointer_to_raw_data,
+    // because the resource table will start will start exactly at the start of the section
     let offset = resource_table_start - resource_section_table.virtual_address as usize
         + resource_section_table.pointer_to_raw_data as usize;
     let end = offset + resource_table_size;
     let section_name = resource_section_table.name()?;
 
-    let resource_data: &[u8] = &buf[offset..end];
+    let resource_data = &buf[offset..end];
 
     let resources = ImageResourceEntry::parse(
         resource_data,
@@ -348,7 +350,7 @@ fn main() -> Result<()> {
         _ => None,
     };
 
-    let pmres_data = match &wevt_template {
+    let _pmres_data = match &wevt_template {
         Some(directory) => match &directory {
             ImageResourceEntry::Directory(dir) => match dir
                 .sub_directories
@@ -373,10 +375,15 @@ fn main() -> Result<()> {
     .ok_or(PEError::NoResourceTable())?;
 
     let pmres_data2 = resources.find(&"WEVT_TEMPLATE", &"#1");
+    let pmres_resource_data = pmres_data2.ok_or(PEError::NoResourceTable())?;
+
+    let rva_to_va_offset = (resource_section_table.virtual_address - resource_section_table.pointer_to_raw_data) as usize;
+    let pmres = &buf[pmres_resource_data.rva_to_data - rva_to_va_offset..pmres_resource_data.rva_to_data - rva_to_va_offset + pmres_resource_data.data_size];
 
     //println!("Resource {:?}", resources);
-    //println!("pmres {:?}", pmres_data);
-    println!("pmres2 {:?}", pmres_data2.unwrap().rva_to_data);
+    //println!("pmres {:?}", _pmres_data);
+    //println!("pmres2 {:?}", pmres_resource_data);
+    println!("pmres header: {:?}", std::str::from_utf8(&pmres[0..4])?);
 
     Ok(())
 }
