@@ -1,0 +1,7 @@
+# For some reason the corresponding value in Cargo.toml works, but doesn't match the cfg below
+[profile.release]
+debug-assertions = false
+
+# For MSVC, force LTCG for release builds in order to force a full PDB to get built, which allows us to open it with tools like SizeBench
+[target.'cfg(all(target_env="msvc", debug_assertions))']
+rustflags = ["-C", "link-arg=/ltcg"]

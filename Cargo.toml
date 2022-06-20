@@ -1,0 +1,26 @@
+[package]
+name = "rsrc"
+version = "0.1.0"
+edition = "2021"
+authors = ["asdf"]
+description = "asdf"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+goblin = {version="0.5", features=["pe32", "pe64"]}
+clap = "2"
+anyhow = "1"
+thiserror = "1"
+byteorder = "1"
+widestring = "0.5"
+
+[profile.release]
+opt-level = "s"
+debug = false
+lto = "fat"
+incremental = false
+debug-assertions = false
+overflow-checks = false
+panic = "abort"
+rpath = false

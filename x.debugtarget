@@ -1,0 +1,11 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TargetConfig Name=".\target\debug\rsrc.exe" LastUsed="2021-12-30T10:58:12.4623500Z">
+  <EngineConfig />
+  <EngineOptions />
+  <TargetOptions>
+    <Option name="LaunchProcess">
+      <Property name="Executable" value=".\target\debug\rsrc.exe" />
+      <Property name="Arguments" value="c:\windows\system32\wevtsvc.dll" />
+    </Option>
+  </TargetOptions>
+</TargetConfig>
