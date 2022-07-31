@@ -16,6 +16,7 @@ pub enum PEError {
     NoResourceTable(),
 }
 
+// struct _IMAGE_RESOURCE_DIRECTORY, winnt.h
 #[repr(C)]
 struct _ImageResourceDirectory {
     characteristics: u32,         // offset 0
@@ -48,12 +49,14 @@ struct _SubDirectoryEntry {
     offset: u32, // high-bit: 1, bits 0-31: offset to another _ImageResourceDirectoryEntry
 }
 
+// struct _IMAGE_RESOURCE_DIRECTORY_ENTRY, winnt.h
 #[repr(C)]
 struct _ImageResourceDirectoryEntry {
     u1: _NamedResourceEntry, // union _NamedResourceEntry / _IdResourceEntry
     u2: _DataDirectoryEntry, // union _DataDirectoryEntry / _SubDirectoryEntry
 }
 
+// struct _IMAGE_RESOURCE_DATA_ENTRY, winnt.h
 #[repr(C)]
 struct _ImageResourceDataEntry {
     offset_to_data: u32, // offset 0
@@ -62,6 +65,7 @@ struct _ImageResourceDataEntry {
     _reserved: u32,      // offset 12
 }
 
+// struct _IMAGE_RESOURCE_DIRECTORY_ENTRY, winnt.h
 #[derive(Debug, Clone)]
 struct ImageResourceDirectoryEntry {
     _id: ResourceIdType,
