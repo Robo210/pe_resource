@@ -1,8 +1,8 @@
 pub mod rsrc {
-    use byteorder::{ByteOrder, LittleEndian};
     use core::mem::size_of;
     use thiserror::Error;
     use widestring::U16Str;
+    use scroll::Pread;
 
     #[derive(Error, Debug)]
     pub enum PEError {
@@ -34,7 +34,7 @@ pub mod rsrc {
         minor_version: u16,           // offset 10
         number_of_named_entries: u16, // offset 12
         number_of_id_entries: u16,    // offset 14
-                                      //  IMAGE_RESOURCE_DIRECTORY_ENTRY DirectoryEntries[]; // offset 16
+        // IMAGE_RESOURCE_DIRECTORY_ENTRY DirectoryEntries[]; // offset 16
     }
 
     #[repr(C)]
@@ -132,21 +132,12 @@ pub mod rsrc {
     }
 
     impl ImageResourceEntry {
-        // fn read_u8(buf: &'a [u8], offset: usize) -> u8 {
-        //     // TODO: bounds check
-        //     buf[offset]
-        // }
-
         fn read_u16(buf: &[u8], offset: usize) -> u16 {
-            // TODO: bounds check
-            let _buf = &buf[offset..offset + 2];
-            LittleEndian::read_u16(_buf)
+            buf.pread_with::<u16>(offset, scroll::LE).unwrap()
         }
 
         fn read_u32(buf: &[u8], offset: usize) -> u32 {
-            // TODO: bounds check
-            let _buf = &buf[offset..offset + 4];
-            LittleEndian::read_u32(_buf)
+            buf.pread_with::<u32>(offset, scroll::LE).unwrap()
         }
 
         unsafe fn read_counted_str(buf: &[u8], offset: usize) -> &U16Str {

@@ -9,10 +9,10 @@ description = "Find a resource from a PE image without loading it."
 
 [dependencies]
 goblin = {version="0.5", features=["pe32", "pe64"]}
+scroll = "0.11.0"
 clap = "2"
 anyhow = "1"
 thiserror = "1"
-byteorder = "1"
 widestring = "0.5"
 
 [profile.release]
