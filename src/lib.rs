@@ -67,15 +67,15 @@ pub mod rsrc {
 
     // struct _IMAGE_RESOURCE_DATA_ENTRY, winnt.h
     #[repr(C)]
+    #[derive(Pread)]
     struct _ImageResourceDataEntry {
+        // RVA is relative to the start of the PE, not the start of the current directory
         offset_to_data: u32, // offset 0
         size: u32,           // offset 4
         code_page: u32,      // offset 8
         _reserved: u32,      // offset 12
     }
 
-    // Roughly equivalent to struct _IMAGE_RESOURCE_DIRECTORY_ENTRY, winnt.h,
-    // without the complex unions. Not properly laid-out for an exact deserialization.
     #[derive(Debug, Clone)]
     struct ImageResourceDirectoryEntry {
         _id: ResourceIdType,
@@ -145,55 +145,47 @@ pub mod rsrc {
             directory_offset: usize,
             directory_id: ResourceIdType,
         ) -> ImageResourceEntry {
+            // We don't actually care about the other fields in this structure, only the two counts
             let num_named_entries: u16 = buf.pread_with(directory_offset + 12, scroll::LE).unwrap();
             let num_id_entries: u16 = buf.pread_with(directory_offset + 14, scroll::LE).unwrap();
             let mut entries =
                 Vec::with_capacity(num_named_entries as usize + num_id_entries as usize);
+                
             let offset = directory_offset + size_of::<_ImageResourceDirectory>() as usize;
 
             for i in 0..num_named_entries + num_id_entries {
                 let cur_offset = offset + size_of::<_ImageResourceDirectoryEntry>() * i as usize;
 
-                // Union 1 from struct _IMAGE_RESOURCE_DIRECTORY_ENTRY: _NamedResourceEntry / _IdResourceEntry
-                let u1: _NamedResourceEntry = buf.pread_with(cur_offset, scroll::LE).unwrap();
-                // assert!(size_of::<_NamedResourceEntry>() == size_of::<u32>()); // Should be a compile-time assert
-                
-                // Union 2 from struct _IMAGE_RESOURCE_DIRECTORY_ENTRY: _DataDirectoryEntry / _SubDirectoryEntry
-                let u2: _DataDirectoryEntry = buf.pread_with(cur_offset + size_of::<_NamedResourceEntry>(), scroll::LE).unwrap();
-                // assert!(size_of::<_DataDirectoryEntry>() == size_of::<u32>()); // Should be a compile-time assert
+                let entry: _ImageResourceDirectoryEntry = buf.pread_with(cur_offset, scroll::LE).unwrap();
 
-                let id = if u1.name & 0x8000_0000 != 0 {
+                let id = if entry.u1.name & 0x8000_0000 != 0 {
                     // entry is a _NamedResourceEntry
 
-                    let name_offset = u1.name & 0x7FFF_FFFF;
+                    let name_offset = entry.u1.name & 0x7FFF_FFFF;
                     unsafe {
                         let name = Self::read_counted_str(buf, name_offset as usize);
                         ResourceIdType::Name(name.to_string().unwrap())
                     }
                 } else {
                     // entry is a _IdResourceEntry
-                    ResourceIdType::Id(u1.name as u16)
+                    ResourceIdType::Id(entry.u1.name as u16)
                 };
 
-                if u2.offset & 0x8000_0000 == 0 {
+                if entry.u2.offset & 0x8000_0000 == 0 {
                     // entry is not a subdirectory
-                    let offset_to_data_entry = u2.offset as usize;
+                    let offset_to_data_entry = entry.u2.offset as usize;
 
-                    // RVA is relative to the start of the PE, not the start of the current directory
-                    let rva_to_data: u32 = buf.pread_with(offset_to_data_entry, scroll::LE).unwrap();
-                    let data_size: u32 = buf.pread_with(offset_to_data_entry + 4, scroll::LE).unwrap();
-                    // this is probably wrong?
-                    let code_page: u32 = buf.pread_with(offset_to_data_entry + 8, scroll::LE).unwrap();
+                    let entry_data: _ImageResourceDataEntry = buf.pread_with(offset_to_data_entry, scroll::LE).unwrap();
 
                     entries.push(ImageResourceEntry::Data(ImageResourceDirectoryEntry {
                         _id: id,
-                        _code_page: code_page,
-                        rva_to_data: rva_to_data as usize,
-                        data_size: data_size as usize,
+                        _code_page: entry_data.code_page,
+                        rva_to_data: entry_data.offset_to_data as usize,
+                        data_size: entry_data.size as usize,
                     }));
                 } else {
                     // entry is another directory
-                    let offset_to_subdirectory_entry = (u2.offset & 0x7FFF_FFFF) as usize;
+                    let offset_to_subdirectory_entry = (entry.u2.offset & 0x7FFF_FFFF) as usize;
                     let subdirectory = Self::parse(&buf, offset_to_subdirectory_entry, id);
 
                     entries.push(subdirectory);
