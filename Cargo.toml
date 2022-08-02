@@ -10,7 +10,6 @@ description = "Find a resource from a PE image without loading it."
 [dependencies]
 goblin = {version="0.5", features=["pe32", "pe64"]}
 scroll = { version = "0.11", features = ["derive"] }
-clap = "2"
 anyhow = "1"
 thiserror = "1"
 widestring = "0.5"
