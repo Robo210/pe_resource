@@ -78,8 +78,8 @@ pub mod rsrc {
 
     #[derive(Debug, Clone)]
     struct ImageResourceDirectoryEntry {
-        _id: ResourceIdType,
-        _code_page: u32,
+        id: ResourceIdType,
+        code_page: u32,
         rva_to_data: usize, // relative to the start of the PE
         data_size: usize,
     }
@@ -150,7 +150,7 @@ pub mod rsrc {
             let num_id_entries: u16 = buf.pread_with(directory_offset + 14, scroll::LE).unwrap();
             let mut entries =
                 Vec::with_capacity(num_named_entries as usize + num_id_entries as usize);
-                
+
             let offset = directory_offset + size_of::<_ImageResourceDirectory>() as usize;
 
             for i in 0..num_named_entries + num_id_entries {
@@ -178,8 +178,8 @@ pub mod rsrc {
                     let entry_data: _ImageResourceDataEntry = buf.pread_with(offset_to_data_entry, scroll::LE).unwrap();
 
                     entries.push(ImageResourceEntry::Data(ImageResourceDirectoryEntry {
-                        _id: id,
-                        _code_page: entry_data.code_page,
+                        id: id,
+                        code_page: entry_data.code_page,
                         rva_to_data: entry_data.offset_to_data as usize,
                         data_size: entry_data.size as usize,
                     }));
@@ -247,8 +247,9 @@ pub mod rsrc {
 
     #[derive(Debug)]
     pub struct ResourceData<'a> {
+        pub id: ResourceIdType, // The resource compiler likes to put the LANGUAGE value as the ID, not the code page
+        pub code_page: u32, // Usually zero?
         pub buf: &'a [u8],
-        // TODO: Resource culture?
     }
 
     impl ImageResource {
@@ -266,7 +267,7 @@ pub mod rsrc {
                         as usize;
                     let data = &self.buf[dir.rva_to_data - rva_to_va_offset
                         ..dir.rva_to_data - rva_to_va_offset + dir.data_size];
-                    Ok(ResourceData { buf: data })
+                    Ok(ResourceData { id: dir.id, code_page: dir.code_page, buf: data })
                 }
                 None => Err(PEError::ResourceNameNotFound()),
             }
