@@ -7,7 +7,7 @@ pub mod rsrc {
     #[derive(Error, Debug)]
     pub enum PEError {
         #[error("format not supported: {0}")]
-        FormatNotSupported(String),
+        FormatNotSupported(&'static str),
 
         #[error("malformed PE file: {0}")]
         MalformedPEFile(String),
@@ -18,11 +18,8 @@ pub mod rsrc {
         #[error("Invalid resource string: {0}")]
         BadResourceString(String),
 
-        #[error("Resource with name {0} not found")]
-        ResourceNameNotFound(String),
-
-        #[error("Resource with id {0} not found")]
-        ResourceIdNotFound(String),
+        #[error("Resource with the provided name / ID not found")]
+        ResourceNameNotFound(),
     }
 
     // struct _IMAGE_RESOURCE_DIRECTORY, winnt.h
@@ -38,6 +35,7 @@ pub mod rsrc {
     }
 
     #[repr(C)]
+    #[derive(Pread)]
     struct _NamedResourceEntry {
         name: u32, // high-bit: 1, bits 0-31: offset
     }
@@ -49,6 +47,7 @@ pub mod rsrc {
     }
 
     #[repr(C)]
+    #[derive(Pread)]
     struct _DataDirectoryEntry {
         offset: u32, // high-bit: 0, bits 0-31: offset
     }
@@ -60,6 +59,7 @@ pub mod rsrc {
 
     // struct _IMAGE_RESOURCE_DIRECTORY_ENTRY, winnt.h
     #[repr(C)]
+    #[derive(Pread)]
     struct _ImageResourceDirectoryEntry {
         u1: _NamedResourceEntry, // union _NamedResourceEntry / _IdResourceEntry
         u2: _DataDirectoryEntry, // union _DataDirectoryEntry / _SubDirectoryEntry
@@ -74,7 +74,8 @@ pub mod rsrc {
         _reserved: u32,      // offset 12
     }
 
-    // struct _IMAGE_RESOURCE_DIRECTORY_ENTRY, winnt.h
+    // Roughly equivalent to struct _IMAGE_RESOURCE_DIRECTORY_ENTRY, winnt.h,
+    // without the complex unions. Not properly laid-out for an exact deserialization.
     #[derive(Debug, Clone)]
     struct ImageResourceDirectoryEntry {
         _id: ResourceIdType,
@@ -132,17 +133,9 @@ pub mod rsrc {
     }
 
     impl ImageResourceEntry {
-        fn read_u16(buf: &[u8], offset: usize) -> u16 {
-            buf.pread_with::<u16>(offset, scroll::LE).unwrap()
-        }
-
-        fn read_u32(buf: &[u8], offset: usize) -> u32 {
-            buf.pread_with::<u32>(offset, scroll::LE).unwrap()
-        }
-
         unsafe fn read_counted_str(buf: &[u8], offset: usize) -> &U16Str {
             // TODO: bounds check
-            let cch = Self::read_u16(buf, offset) as usize;
+            let cch = buf.pread_with::<u16>(offset, scroll::LE).unwrap() as usize;
             let str = &buf[offset + 2] as *const u8 as *const u16;
             U16Str::from_ptr(str, cch)
         }
@@ -152,50 +145,55 @@ pub mod rsrc {
             directory_offset: usize,
             directory_id: ResourceIdType,
         ) -> ImageResourceEntry {
-            let num_named_entries = ImageResourceEntry::read_u16(buf, directory_offset + 12);
-            let num_id_entries = ImageResourceEntry::read_u16(buf, directory_offset + 14);
+            let num_named_entries: u16 = buf.pread_with(directory_offset + 12, scroll::LE).unwrap();
+            let num_id_entries: u16 = buf.pread_with(directory_offset + 14, scroll::LE).unwrap();
             let mut entries =
                 Vec::with_capacity(num_named_entries as usize + num_id_entries as usize);
-            let mut offset = directory_offset + size_of::<_ImageResourceDirectory>() as usize;
+            let offset = directory_offset + size_of::<_ImageResourceDirectory>() as usize;
 
             for i in 0..num_named_entries + num_id_entries {
-                offset = offset + size_of::<_ImageResourceDirectoryEntry>() * i as usize;
-                let u1 = Self::read_u32(buf, offset); // _NamedResourceEntry / _IdResourceEntry
-                assert!(size_of::<_NamedResourceEntry>() == size_of::<u32>());
-                let u2 = Self::read_u32(buf, offset + size_of::<_NamedResourceEntry>()); // _DataDirectoryEntry / _SubDirectoryEntry
+                let cur_offset = offset + size_of::<_ImageResourceDirectoryEntry>() * i as usize;
 
-                let id = if u1 & 0x8000_0000 != 0 {
+                // Union 1 from struct _IMAGE_RESOURCE_DIRECTORY_ENTRY: _NamedResourceEntry / _IdResourceEntry
+                let u1: _NamedResourceEntry = buf.pread_with(cur_offset, scroll::LE).unwrap();
+                // assert!(size_of::<_NamedResourceEntry>() == size_of::<u32>()); // Should be a compile-time assert
+                
+                // Union 2 from struct _IMAGE_RESOURCE_DIRECTORY_ENTRY: _DataDirectoryEntry / _SubDirectoryEntry
+                let u2: _DataDirectoryEntry = buf.pread_with(cur_offset + size_of::<_NamedResourceEntry>(), scroll::LE).unwrap();
+                // assert!(size_of::<_DataDirectoryEntry>() == size_of::<u32>()); // Should be a compile-time assert
+
+                let id = if u1.name & 0x8000_0000 != 0 {
                     // entry is a _NamedResourceEntry
 
-                    let name_offset = u1 & 0x7FFF_FFFF;
+                    let name_offset = u1.name & 0x7FFF_FFFF;
                     unsafe {
                         let name = Self::read_counted_str(buf, name_offset as usize);
                         ResourceIdType::Name(name.to_string().unwrap())
                     }
                 } else {
                     // entry is a _IdResourceEntry
-                    ResourceIdType::Id(u1 as u16)
+                    ResourceIdType::Id(u1.name as u16)
                 };
 
-                if u2 & 0x8000_0000 == 0 {
+                if u2.offset & 0x8000_0000 == 0 {
                     // entry is not a subdirectory
-                    let offset_to_data_entry = u2 as usize;
+                    let offset_to_data_entry = u2.offset as usize;
 
                     // RVA is relative to the start of the PE, not the start of the current directory
-                    let rva_to_data = Self::read_u32(buf, offset_to_data_entry) as usize;
-                    let data_size = Self::read_u32(buf, offset_to_data_entry + 4) as usize;
+                    let rva_to_data: u32 = buf.pread_with(offset_to_data_entry, scroll::LE).unwrap();
+                    let data_size: u32 = buf.pread_with(offset_to_data_entry + 4, scroll::LE).unwrap();
                     // this is probably wrong?
-                    let code_page = Self::read_u32(buf, offset_to_data_entry + 8);
+                    let code_page: u32 = buf.pread_with(offset_to_data_entry + 8, scroll::LE).unwrap();
 
                     entries.push(ImageResourceEntry::Data(ImageResourceDirectoryEntry {
                         _id: id,
                         _code_page: code_page,
-                        rva_to_data,
-                        data_size,
+                        rva_to_data: rva_to_data as usize,
+                        data_size: data_size as usize,
                     }));
                 } else {
                     // entry is another directory
-                    let offset_to_subdirectory_entry = (u2 & 0x7FFF_FFFF) as usize;
+                    let offset_to_subdirectory_entry = (u2.offset & 0x7FFF_FFFF) as usize;
                     let subdirectory = Self::parse(&buf, offset_to_subdirectory_entry, id);
 
                     entries.push(subdirectory);
@@ -258,14 +256,16 @@ pub mod rsrc {
     #[derive(Debug)]
     pub struct ResourceData<'a> {
         pub buf: &'a [u8],
+        // TODO: Resource culture?
     }
 
     impl ImageResource {
+        // Win32 FindResourceW
+        // Wrapper around ImageResourceEntry::find that returns only the buffer slice for the found resource
         pub fn find<T, U>(&self, name: &T, id: &U) -> Result<ResourceData, PEError>
         where
             ResourceIdType: PartialEq<T>,
-            ResourceIdType: PartialEq<U>,
-            T: std::fmt::Display,
+            ResourceIdType: PartialEq<U>
         {
             match self.resource.find(name, id) {
                 Some(dir) => {
@@ -276,7 +276,7 @@ pub mod rsrc {
                         ..dir.rva_to_data - rva_to_va_offset + dir.data_size];
                     Ok(ResourceData { buf: data })
                 }
-                None => Err(PEError::ResourceNameNotFound(name.to_string())),
+                None => Err(PEError::ResourceNameNotFound()),
             }
         }
     }
@@ -293,18 +293,18 @@ pub mod rsrc {
             goblin::Object::PE(pe) => {
                 if let Some(opt) = pe.header.optional_header {
                     if opt.data_directories.get_clr_runtime_header().is_some() {
-                        return Err(PEError::FormatNotSupported(".NET assembly".to_string()).into());
+                        return Err(PEError::FormatNotSupported(".NET assembly"));
                     }
                 }
                 Ok(pe)
             }
-            goblin::Object::Elf(_) => Err(PEError::FormatNotSupported("elf".to_string()).into()),
+            goblin::Object::Elf(_) => Err(PEError::FormatNotSupported("elf")),
             goblin::Object::Archive(_) => {
-                Err(PEError::FormatNotSupported("archive".to_string()).into())
+                Err(PEError::FormatNotSupported("archive"))
             }
-            goblin::Object::Mach(_) => Err(PEError::FormatNotSupported("macho".to_string()).into()),
+            goblin::Object::Mach(_) => Err(PEError::FormatNotSupported("macho")),
             goblin::Object::Unknown(_) => {
-                Err(PEError::FormatNotSupported("unknown".to_string()).into())
+                Err(PEError::FormatNotSupported("unknown"))
             }
         };
 

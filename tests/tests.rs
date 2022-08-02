@@ -1,5 +1,5 @@
 #[cfg(test)]
-mod tests {
+mod functional {
     #[test]
     #[cfg(target_os = "windows")]
     fn wevtapi() -> anyhow::Result<()> {
