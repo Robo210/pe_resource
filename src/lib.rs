@@ -20,6 +20,9 @@ pub mod rsrc {
 
         #[error("Resource with the provided name / ID not found")]
         ResourceNameNotFound(),
+
+        #[error("An error was returned when prasing the PE: {0}")]
+        GoblinError(goblin::error::Error)
     }
 
     // struct _IMAGE_RESOURCE_DIRECTORY, winnt.h
@@ -69,7 +72,6 @@ pub mod rsrc {
     #[repr(C)]
     #[derive(Pread)]
     struct _ImageResourceDataEntry {
-        // RVA is relative to the start of the PE, not the start of the current directory
         offset_to_data: u32, // offset 0
         size: u32,           // offset 4
         code_page: u32,      // offset 8
@@ -80,7 +82,7 @@ pub mod rsrc {
     struct ImageResourceDirectoryEntry {
         id: ResourceIdType,
         code_page: u32,
-        rva_to_data: usize, // relative to the start of the PE
+        rva_to_data: usize, // relative to the start of the section / resource directory
         data_size: usize,
     }
 
@@ -262,11 +264,15 @@ pub mod rsrc {
         {
             match self.resource.find(name, id) {
                 Some(dir) => {
+                    // Since the RVA is relative to the loaded image layout rather than the raw image on disk,
+                    // we need to adjust the RVA by the difference between those two layouts.
                     let rva_to_va_offset = (self.resource_section_table.virtual_address
                         - self.resource_section_table.pointer_to_raw_data)
                         as usize;
+                    
                     let data = &self.buf[dir.rva_to_data - rva_to_va_offset
                         ..dir.rva_to_data - rva_to_va_offset + dir.data_size];
+
                     Ok(ResourceData { id: dir.id, code_page: dir.code_page, buf: data })
                 }
                 None => Err(PEError::ResourceNameNotFound()),
@@ -305,15 +311,16 @@ pub mod rsrc {
 
         let optional_header = pe.header.optional_header.unwrap();
 
-        let resource_table = match optional_header.data_directories.get_resource_table() {
-            None => Err(PEError::NoResourceTable()),
-            Some(t) => Ok(t),
-        }?;
+        let resource_table = optional_header.data_directories.get_resource_table().ok_or(PEError::NoResourceTable())?;
 
         let resource_table_start = resource_table.virtual_address as usize;
         let resource_table_end = resource_table_start + resource_table.size as usize;
 
         let mut resource_section: Option<goblin::pe::section_table::SectionTable> = None;
+
+        // Find the PE section that holds the resource table.
+        // We don't really need to do this, because the resource table will almost certainly exist at the
+        // very start of the section table, but it's a good sanity check anyway.
 
         // PE section names are mostly meaningless, so looking for the ".rsrc" section by name may not work
         for section in pe.sections {
@@ -325,14 +332,14 @@ pub mod rsrc {
             }
         }
 
-        let resource_section_table =
-            resource_section.expect("could not find section that holds the resource table");
+        let resource_section_table = resource_section.ok_or(PEError::NoResourceTable())?;
 
         // offset will almost always == resource_section_table.pointer_to_raw_data,
         // because the resource table will start will start exactly at the start of the section
         let offset = resource_table_start - resource_section_table.virtual_address as usize
             + resource_section_table.pointer_to_raw_data as usize;
         let end = offset + resource_section_table.virtual_size as usize;
+
         let section_name = resource_section_table
             .name()
             .map_err(|e| PEError::BadResourceString(e.to_string()))?;
