@@ -1,7 +1,7 @@
-pub mod rsrc {
+mod rsrc {
     use core::mem::size_of;
     use thiserror::Error;
-    use widestring::U16Str;
+    use widestring::{U16Str, U16String};
     use scroll::Pread;
 
     #[derive(Error, Debug)]
@@ -79,70 +79,120 @@ pub mod rsrc {
     }
 
     #[derive(Debug, Clone)]
-    struct ImageResourceDirectoryEntry {
-        id: ResourceIdType,
-        code_page: u32,
-        rva_to_data: usize, // relative to the start of the section / resource directory
-        data_size: usize,
+    pub struct ImageResourceDirectoryEntry {
+        pub id: ResourceIdType,
+        pub code_page: u32,
+        pub rva_to_data: usize, // relative to the start of the section / resource directory
+        pub data_size: usize,
     }
 
-    #[derive(Debug, PartialEq, Clone)]
+    #[derive(Debug, Clone)]
+    pub struct IndexedString {
+        offset: usize,
+        cch: usize
+    }
+
+    // impl std::fmt::Display for IndexedString {
+    //     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    //         let 
+    //     }
+    // }
+
+    pub trait ResourceIdPartialEq<Rhs: ?Sized = Self> {
+        fn eq_with_buffer(&self, buf: &[u8], other: &Rhs) -> bool;
+    }
+
+    #[derive(Debug, Clone)]
     pub enum ResourceIdType {
-        Name(String),
+        Name(IndexedString),
         Id(u16),
     }
 
     // Compare "#012" as 0n12, as described in the MSDN documentation for FindResource.
     // Any string parse errors return false.
-    fn compare_str_id(name: &str, id: &u16) -> bool {
-        if name.chars().nth(0).unwrap_or('x') == '#' {
-            let parsed_id = name.get(1..).unwrap().parse::<u16>();
-            if parsed_id.is_ok() {
-                return parsed_id.unwrap() == *id;
+    fn compare_str_id<'a>(name: &'a U16Str, id: u16) -> bool {
+        if !name.is_empty() {
+            let mut chars_lossy = name.as_slice().iter();
+            if let Some(c) = chars_lossy.nth(0) {
+                if *c == 35 { // 35 == '#'
+                    let mut parsed_id: u16 = 0;
+                    let mut has_value = false;
+                    for x in chars_lossy {
+                        if *x >= 48 && *x <= 57 { // '0' through '9'
+                            parsed_id = parsed_id * 10 + (*x - 48); // TODO: Check for u16 overflow
+                            has_value = true;
+                        }
+                        else if *x == 0 {
+                            break;
+                        }
+                        else {
+                            return false;
+                        }
+                    }
+                    return has_value && parsed_id == id;
+                }
             }
         }
         false
     }
 
-    impl PartialEq<&str> for ResourceIdType {
-        fn eq(&self, name: &&str) -> bool {
+    impl ResourceIdPartialEq<&str> for ResourceIdType {
+        fn eq_with_buffer(&self, buf: &[u8], name: &&str) -> bool {
+            let utf16_name = U16String::from_str(name);
             match self {
-                ResourceIdType::Name(x) => x == name,
-                ResourceIdType::Id(id) => compare_str_id(name, id),
+                ResourceIdType::Name(x) => unsafe {
+                    let p = &buf[x.offset] as *const u8 as *const u16;
+                    let name_str: &U16Str = U16Str::from_ptr(p, x.cch);
+                    name_str == utf16_name.as_ustr()
+                },
+                ResourceIdType::Id(id) => compare_str_id(&utf16_name, *id),
             }
         }
     }
 
-    impl PartialEq<u16> for ResourceIdType {
-        fn eq(&self, id: &u16) -> bool {
+    impl ResourceIdPartialEq<u16> for ResourceIdType {
+        fn eq_with_buffer(&self, buf: &[u8], id: &u16) -> bool
+        {
             match self {
                 ResourceIdType::Id(x) => *x == *id,
-                ResourceIdType::Name(name) => compare_str_id(name, id),
+                ResourceIdType::Name(name) => unsafe {
+                    let p = &buf[name.offset] as *const u8 as *const u16;
+                    let name_str: &U16Str = U16Str::from_ptr(p, name.cch);
+                    compare_str_id(name_str, *id)
+                }
             }
         }
     }
 
     #[derive(Debug)]
-    struct ImageResourceDirectoryRoot {
+    pub struct ImageResourceDirectoryRoot {
         id: ResourceIdType,
         sub_directories: Vec<ImageResourceEntry>,
     }
 
     #[derive(Debug)]
-    enum ImageResourceEntry {
+    pub enum ImageResourceEntry {
         Directory(ImageResourceDirectoryRoot),
         Data(ImageResourceDirectoryEntry),
     }
 
     impl ImageResourceEntry {
-        unsafe fn read_counted_str(buf: &[u8], offset: usize) -> &U16Str {
-            // TODO: bounds check
+        // unsafe fn read_counted_str(buf: &'a [u8], offset: usize) -> &'a U16Str {
+        //     // TODO: bounds check
+        //     let cch = buf.pread_with::<u16>(offset, scroll::LE).unwrap() as usize;
+        //     let str = &buf[offset + 2] as *const u8 as *const u16;
+        //     U16Str::from_ptr(str, cch)
+        // }
+
+        fn get_indexed_str(buf: &[u8], offset: usize) -> IndexedString {
             let cch = buf.pread_with::<u16>(offset, scroll::LE).unwrap() as usize;
-            let str = &buf[offset + 2] as *const u8 as *const u16;
-            U16Str::from_ptr(str, cch)
+            if (cch * 2) + offset + 2 > buf.len() {
+                panic!("oh noes");
+            }
+            IndexedString { offset: offset + 2, cch}
         }
 
-        fn parse(
+        pub fn parse(
             buf: &[u8],
             directory_offset: usize,
             directory_id: ResourceIdType,
@@ -164,10 +214,8 @@ pub mod rsrc {
                     // entry is a _NamedResourceEntry
 
                     let name_offset = entry.u1.name & 0x7FFF_FFFF;
-                    unsafe {
-                        let name = Self::read_counted_str(buf, name_offset as usize);
-                        ResourceIdType::Name(name.to_string().unwrap())
-                    }
+                    let name = Self::get_indexed_str(buf, name_offset as usize);
+                    ResourceIdType::Name(name)
                 } else {
                     // entry is a _IdResourceEntry
                     ResourceIdType::Id(entry.u1.name as u16)
@@ -201,19 +249,19 @@ pub mod rsrc {
         }
 
         // Win32 FindResourceW
-        fn find<T, U>(&self, name: &T, id: &U) -> Option<ImageResourceDirectoryEntry>
+        pub fn find<T, U>(&self, name: &T, id: &U, buf: &[u8]) -> Option<ImageResourceDirectoryEntry>
         where
-            ResourceIdType: PartialEq<T>,
-            ResourceIdType: PartialEq<U>,
+            ResourceIdType: ResourceIdPartialEq<T>,
+            ResourceIdType: ResourceIdPartialEq<U>,
         {
             match self {
                 ImageResourceEntry::Directory(root) => {
                     for item in root.sub_directories.iter() {
                         if let ImageResourceEntry::Directory(dir) = item {
-                            if dir.id == *name {
+                            if dir.id.eq_with_buffer(buf, name) {
                                 let x = dir.sub_directories.iter().find(|subdir| {
                                     if let ImageResourceEntry::Directory(child) = subdir {
-                                        if child.id == *id {
+                                        if child.id.eq_with_buffer(buf, id) {
                                             true
                                         } else {
                                             false
@@ -239,12 +287,22 @@ pub mod rsrc {
             }
         }
     }
+}
+
+pub mod pe_resource {
+    use memmap2::MmapOptions;
+
+    pub use crate::rsrc::PEError;
+    pub use crate::rsrc::ResourceIdPartialEq;
+    use crate::rsrc::*;
 
     #[derive(Debug)]
     pub struct ImageResource {
         resource: ImageResourceEntry,
         resource_section_table: goblin::pe::section_table::SectionTable,
-        buf: Vec<u8>,
+        pub image_file: memmap2::Mmap,
+        resource_table_offset: usize,
+        resource_table_end: usize
     }
 
     #[derive(Debug)]
@@ -254,15 +312,15 @@ pub mod rsrc {
         pub buf: &'a [u8],
     }
 
-    impl ImageResource {
+    impl<'a> ImageResource {
         // Win32 FindResourceW
         // Wrapper around ImageResourceEntry::find that returns only the buffer slice for the found resource
         pub fn find<T, U>(&self, name: &T, id: &U) -> Result<ResourceData, PEError>
         where
-            ResourceIdType: PartialEq<T>,
-            ResourceIdType: PartialEq<U>
+            ResourceIdType: ResourceIdPartialEq<T>,
+            ResourceIdType: ResourceIdPartialEq<U>
         {
-            match self.resource.find(name, id) {
+            match self.resource.find(name, id, &self.image_file[self.resource_table_offset..self.resource_table_end]) {
                 Some(dir) => {
                     // Since the RVA is relative to the loaded image layout rather than the raw image on disk,
                     // we need to adjust the RVA by the difference between those two layouts.
@@ -270,7 +328,7 @@ pub mod rsrc {
                         - self.resource_section_table.pointer_to_raw_data)
                         as usize;
                     
-                    let data = &self.buf[dir.rva_to_data - rva_to_va_offset
+                    let data = &self.image_file[dir.rva_to_data - rva_to_va_offset
                         ..dir.rva_to_data - rva_to_va_offset + dir.data_size];
 
                     Ok(ResourceData { id: dir.id, code_page: dir.code_page, buf: data })
@@ -281,7 +339,9 @@ pub mod rsrc {
     }
 
     pub fn find_resource_directory_from_pe(filename: &str) -> Result<ImageResource, PEError> {
-        let buf = std::fs::read(filename).map_err(|e| PEError::BadResourceString(e.to_string()))?;
+        let file = std::fs::File::open(filename).map_err(|e| PEError::BadResourceString(e.to_string()))?;
+        let mapped = unsafe { MmapOptions::new().map(&file).map_err(|e| PEError::BadResourceString(e.to_string()))? };
+        let buf: &[u8] = &mapped;
         if buf.len() < 0x10 {
             panic!("file too small: {}", filename);
         }
@@ -340,20 +400,22 @@ pub mod rsrc {
             + resource_section_table.pointer_to_raw_data as usize;
         let end = offset + resource_section_table.virtual_size as usize;
 
-        let section_name = resource_section_table
+        let _section_name = resource_section_table
             .name()
             .map_err(|e| PEError::BadResourceString(e.to_string()))?;
 
         let resource = ImageResourceEntry::parse(
             &buf[offset..end],
             0,
-            ResourceIdType::Name(section_name.to_string()),
+            ResourceIdType::Id(0)// ResourceIdType::Name(section_name.to_string()),
         );
 
         Ok(ImageResource {
             resource,
             resource_section_table,
-            buf,
+            image_file: mapped,
+            resource_table_offset: offset,
+            resource_table_end: end
         })
     }
 }

@@ -13,6 +13,7 @@ scroll = { version = "0.11", features = ["derive"] }
 anyhow = "1"
 thiserror = "1"
 widestring = "0.5"
+memmap2 = "0.5"
 
 [profile.release]
 opt-level = "s"
