@@ -110,10 +110,10 @@ mod rsrc {
 
     // Compare "#012" as 0n12, as described in the MSDN documentation for FindResource.
     // Any string parse errors return false.
-    fn compare_str_id<'a>(name: &'a U16Str, id: u16) -> bool {
+    fn compare_str_id(name: &U16Str, id: u16) -> bool {
         if !name.is_empty() {
             let mut chars_lossy = name.as_slice().iter();
-            if let Some(c) = chars_lossy.nth(0) {
+            if let Some(c) = chars_lossy.next() {
                 if *c == 35 { // 35 == '#'
                     let mut parsed_id: u16 = 0;
                     let mut has_value = false;
@@ -236,7 +236,7 @@ mod rsrc {
                 } else {
                     // entry is another directory
                     let offset_to_subdirectory_entry = (entry.u2.offset & 0x7FFF_FFFF) as usize;
-                    let subdirectory = Self::parse(&buf, offset_to_subdirectory_entry, id);
+                    let subdirectory = Self::parse(buf, offset_to_subdirectory_entry, id);
 
                     entries.push(subdirectory);
                 }
@@ -290,8 +290,6 @@ mod rsrc {
 }
 
 pub mod pe_resource {
-    use memmap2::MmapOptions;
-
     pub use crate::rsrc::PEError;
     pub use crate::rsrc::ResourceIdPartialEq;
     use crate::rsrc::*;
@@ -312,7 +310,7 @@ pub mod pe_resource {
         pub buf: &'a [u8],
     }
 
-    impl<'a> ImageResource {
+    impl ImageResource {
         // Win32 FindResourceW
         // Wrapper around ImageResourceEntry::find that returns only the buffer slice for the found resource
         pub fn find<T, U>(&self, name: &T, id: &U) -> Result<ResourceData, PEError>
@@ -340,13 +338,13 @@ pub mod pe_resource {
 
     pub fn find_resource_directory_from_pe(filename: &str) -> Result<ImageResource, PEError> {
         let file = std::fs::File::open(filename).map_err(|e| PEError::BadResourceString(e.to_string()))?;
-        let mapped = unsafe { MmapOptions::new().map(&file).map_err(|e| PEError::BadResourceString(e.to_string()))? };
+        let mapped = unsafe { memmap2::Mmap::map(&file).map_err(|e| PEError::BadResourceString(e.to_string()))? };
         let buf: &[u8] = &mapped;
         if buf.len() < 0x10 {
             panic!("file too small: {}", filename);
         }
 
-        let _pe: Result<goblin::pe::PE, PEError> = match goblin::Object::parse(&buf)
+        let _pe: Result<goblin::pe::PE, PEError> = match goblin::Object::parse(buf)
             .map_err(|e| PEError::BadResourceString(e.to_string()))?
         {
             goblin::Object::PE(pe) => {
