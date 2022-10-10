@@ -472,7 +472,6 @@ pub mod pe_resource {
                         let thous = (val % 10) as u32;
                         val /= 10;
                         let ten_thous = (val % 10) as u32;
-                        val /= 10;
                         Some(IdIter {
                             chars: [
                                 char::from_u32_unchecked('0' as u32 + ten_thous),
@@ -522,10 +521,7 @@ pub mod pe_resource {
             match &mut self.0 {
                 Some(iter) => match iter.next() {
                     Some(x) => Some(x),
-                    None => match &mut self.1 {
-                        Some(iter2) => iter2.next(),
-                        None => None,
-                    },
+                    None => None
                 },
                 None => match &mut self.1 {
                     Some(iter2) => match iter2.next() {
