@@ -4,7 +4,7 @@ mod functional {
 
     #[test]
     #[cfg(target_os = "windows")]
-    fn wevtapi() -> anyhow::Result<()> {
+    fn wevtapi() -> Result<(), rsrc::pe_resource::PEError> {
         let resource = rsrc::pe_resource::find_resource_directory_from_pe(
             "C:\\windows\\system32\\wevtapi.dll",
         )?;
@@ -21,7 +21,7 @@ mod functional {
 
     #[test]
     #[cfg(target_os = "windows")]
-    fn wevtsvc() -> anyhow::Result<()> {
+    fn wevtsvc() -> Result<(), rsrc::pe_resource::PEError> {
         let resource = rsrc::pe_resource::find_resource_directory_from_pe(
             "C:\\windows\\system32\\wevtsvc.dll",
         )?;
@@ -38,13 +38,18 @@ mod functional {
 
     #[test]
     #[cfg(target_os = "windows")]
-    fn wevtapi_enum() -> anyhow::Result<()> {
+    fn wevtapi_enum() -> Result<(), rsrc::pe_resource::PEError> {
         let resources = rsrc::pe_resource::find_resource_directory_from_pe(
             "C:\\windows\\system32\\wevtapi.dll",
         )?;
 
         for resource in &resources {
-            println!("Resource: {:?}", resource.id);
+            println!(
+                "Enumerated resource: {}/{}/{}",
+                String::from_iter(resources.to_chars(resource.name)),
+                String::from_iter(resources.to_chars(resource.id)),
+                String::from_iter(resources.to_chars(resource.data.id))
+            );
         }
 
         Ok(())

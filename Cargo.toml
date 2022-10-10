@@ -8,15 +8,17 @@ description = "Find a resource from a PE image without loading it."
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
-# Uses allocations to cache the parsed resource directory, for faster repeated searches.
+# Uses allocations to cache the parsed resource directory, for (potentially) faster repeated searches.
+# Note that not enabling this feature does not make the package no_std or not use allocations at all;
+# several of the dependencies (i.e. goblin) will always need to allocate memory.
 alloc = []
 
 [dependencies]
-goblin = {version="0.5", features=["pe32", "pe64"]}
-scroll = { version = "0.11", features = ["derive"] }
-anyhow = "1"
+goblin = {version="0.5", default-features = false, features=["pe32", "pe64"]}
+scroll = { version = "0.11", default-features = false, features = ["derive"] }
+anyhow = { version="1", default-features = false }
 thiserror = "1"
-widestring = "0.5"
+widestring = { version="0.5", default-features = false }
 memmap2 = "0.5"
 
 [profile.release]

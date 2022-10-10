@@ -18,7 +18,13 @@ fn main() -> Result<(), pe_resource::PEError> {
     println!("Resource tree:\n{:?}", resources);
 
     for resource in resources.iter() {
-        println!("Enumerated resource: {}/{}/{}", resources.to_string(resource.name), resources.to_string(resource.id), resources.to_string(resource.data.id));
+        //println!("Enumerated resource: {}/{}/{}", resources.to_string(resource.name), resources.to_string(resource.id), resources.to_string(resource.data.id));
+        println!(
+            "Enumerated resource: {}/{}/{}",
+            String::from_iter(resources.to_chars(resource.name)),
+            String::from_iter(resources.to_chars(resource.id)),
+            String::from_iter(resources.to_chars(resource.data.id))
+        );
     }
 
     Ok(())

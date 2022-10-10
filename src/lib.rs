@@ -3,7 +3,7 @@ mod rsrc {
     use core::mem::size_of;
     use scroll::Pread;
     use thiserror::Error;
-    use widestring::{U16Str, U16String};
+    use widestring::U16Str;
 
     #[derive(Error, Debug)]
     pub enum PEError {
@@ -105,15 +105,29 @@ mod rsrc {
             }
         }
 
-        pub fn fmt_with_buffer(&self, buf: &[u8], f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        #[cfg(feature = "alloc")]
+        pub fn fmt_with_buffer(
+            &self,
+            buf: &[u8],
+            f: &mut std::fmt::Formatter<'_>,
+        ) -> std::fmt::Result {
             write!(f, "{}", self.to_string_with_buffer(buf))
         }
 
+        #[cfg(feature = "alloc")]
         pub fn to_string_with_buffer(&self, buf: &[u8]) -> String {
             unsafe {
                 let p = &buf[self.offset] as *const u8 as *const u16;
                 let name_str: &U16Str = U16Str::from_ptr(p, self.cch);
                 name_str.to_string().unwrap()
+            }
+        }
+
+        pub fn chars(self, buf: &[u8]) -> widestring::iter::CharsLossy {
+            unsafe {
+                let p = &buf[self.offset] as *const u8 as *const u16;
+                let name_str: &U16Str = U16Str::from_ptr(p, self.cch);
+                name_str.chars_lossy()
             }
         }
     }
@@ -136,42 +150,44 @@ mod rsrc {
 
     // Compare "#012" as 0n12, as described in the MSDN documentation for FindResource.
     // Any string parse errors return false.
-    fn compare_str_id(name: &U16Str, id: u16) -> bool {
-        if !name.is_empty() {
-            let mut chars_lossy = name.as_slice().iter();
-            if let Some(c) = chars_lossy.next() {
-                if *c == 35 {
-                    // 35 == '#'
-                    let mut parsed_id: u16 = 0;
-                    let mut has_value = false;
-                    for x in chars_lossy {
-                        if *x >= 48 && *x <= 57 {
-                            // '0' through '9'
-                            parsed_id = parsed_id * 10 + (*x - 48); // TODO: Check for u16 overflow
-                            has_value = true;
-                        } else if *x == 0 {
-                            break;
-                        } else {
-                            return false;
-                        }
+    fn compare_str_id<I: IntoIterator<Item = char>>(name: I, id: u16) -> bool {
+        let mut chars = name.into_iter();
+        if let Some(c) = chars.next() {
+            if c == '#' {
+                let mut parsed_id: u16 = 0;
+                let mut has_value = false;
+                for x in chars {
+                    let x = u32::from(x) as u16; // TODO: Check for u16 overflow
+                    if x >= 48 && x <= 57 {
+                        // '0' through '9'
+                        parsed_id = parsed_id * 10 + (x - 48); // TODO: Check for u16 overflow
+                        has_value = true;
+                    } else if x == 0 {
+                        break;
+                    } else {
+                        return false;
                     }
-                    return has_value && parsed_id == id;
                 }
+                return has_value && parsed_id == id;
             }
         }
         false
     }
 
+    fn compare_utf8_utf16_str(lhs: &str, rhs: &U16Str) -> bool {
+        let rhs_utf8 = rhs.chars_lossy();
+        lhs.chars().eq(rhs_utf8)
+    }
+
     impl ResourceIdPartialEq<&str> for ResourceIdType {
         fn eq_with_buffer(&self, buf: &[u8], name: &&str) -> bool {
-            let utf16_name = U16String::from_str(name);
             match self {
                 ResourceIdType::Name(x) => unsafe {
                     let p = &buf[x.offset] as *const u8 as *const u16;
                     let name_str: &U16Str = U16Str::from_ptr(p, x.cch);
-                    name_str == utf16_name.as_ustr()
+                    compare_utf8_utf16_str(*name, name_str)
                 },
-                ResourceIdType::Id(id) => compare_str_id(&utf16_name, *id),
+                ResourceIdType::Id(id) => compare_str_id(name.chars(), *id),
             }
         }
     }
@@ -183,17 +199,18 @@ mod rsrc {
                 ResourceIdType::Name(name) => unsafe {
                     let p = &buf[name.offset] as *const u8 as *const u16;
                     let name_str: &U16Str = U16Str::from_ptr(p, name.cch);
-                    compare_str_id(name_str, *id)
+                    compare_str_id(name_str.chars_lossy(), *id)
                 },
             }
         }
     }
 
     impl ResourceIdType {
+        #[cfg(feature = "alloc")]
         pub fn to_string_with_buffer(&self, buf: &[u8]) -> String {
             match self {
                 ResourceIdType::Id(x) => x.to_string(),
-                ResourceIdType::Name(name) => name.to_string_with_buffer(buf)
+                ResourceIdType::Name(name) => name.to_string_with_buffer(buf),
             }
         }
     }
@@ -421,9 +438,125 @@ pub mod pe_resource {
             self.into_iter()
         }
 
+        #[cfg(feature = "alloc")]
         pub fn to_string(&self, resource_id: ResourceIdType) -> String {
             let buf = &self.image_file[self.resource_table_offset..self.resource_table_end];
             resource_id.to_string_with_buffer(buf)
+        }
+
+        pub fn to_chars<'x>(
+            &'a self,
+            resource_id: ResourceIdType,
+        ) -> impl Iterator<Item = char> + 'x
+        where
+            'a: 'x,
+        {
+            let buf = &self.image_file[self.resource_table_offset..self.resource_table_end];
+            CombinedIter(
+                if let ResourceIdType::Name(name) = resource_id {
+                    Some(IndexedStringIter {
+                        iter: name.clone().chars(buf),
+                    })
+                } else {
+                    None
+                },
+                if let ResourceIdType::Id(id) = resource_id {
+                    unsafe {
+                        let mut val = id;
+                        let ones = (val % 10) as u32;
+                        val /= 10;
+                        let tens = (val % 10) as u32;
+                        val /= 10;
+                        let hundreds = (val % 10) as u32;
+                        val /= 10;
+                        let thous = (val % 10) as u32;
+                        val /= 10;
+                        let ten_thous = (val % 10) as u32;
+                        val /= 10;
+                        Some(IdIter {
+                            chars: [
+                                char::from_u32_unchecked('0' as u32 + ten_thous),
+                                char::from_u32_unchecked('0' as u32 + thous),
+                                char::from_u32_unchecked('0' as u32 + hundreds),
+                                char::from_u32_unchecked('0' as u32 + tens),
+                                char::from_u32_unchecked('0' as u32 + ones),
+                            ],
+                            index: if ten_thous != 0 {
+                                0
+                            } else if thous != 0 {
+                                1
+                            } else if hundreds != 0 {
+                                2
+                            } else if tens != 0 {
+                                3
+                            } else {
+                                4
+                            },
+                        })
+                    }
+                } else {
+                    None
+                },
+            )
+        }
+    }
+
+    struct IndexedStringIter<I> {
+        iter: I,
+    }
+
+    struct IdIter {
+        chars: [char; 5],
+        index: usize,
+    }
+
+    struct CombinedIter<'a>(
+        Option<IndexedStringIter<widestring::iter::CharsLossy<'a>>>,
+        Option<IdIter>,
+    );
+
+    impl<'a> Iterator for CombinedIter<'a> {
+        type Item = char;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            match &mut self.0 {
+                Some(iter) => match iter.next() {
+                    Some(x) => Some(x),
+                    None => match &mut self.1 {
+                        Some(iter2) => iter2.next(),
+                        None => None,
+                    },
+                },
+                None => match &mut self.1 {
+                    Some(iter2) => match iter2.next() {
+                        Some(c) => Some(c),
+                        None => None,
+                    },
+                    None => None,
+                },
+            }
+        }
+    }
+
+    impl<I: Iterator<Item = char>> Iterator for IndexedStringIter<I> {
+        type Item = char;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            self.iter.next()
+        }
+    }
+
+    impl Iterator for IdIter {
+        type Item = char;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            if self.index >= self.chars.len() {
+                return None;
+            }
+
+            let ret = Some(self.chars[self.index]);
+            self.index += 1;
+            ret
         }
     }
 
@@ -603,10 +736,10 @@ pub mod pe_resource {
             panic!("file too small: {}", filename);
         }
 
-        let _pe: Result<goblin::pe::PE, PEError> = match goblin::Object::parse(buf)
-            .map_err(|e| PEError::BadResourceString(e.to_string()))?
+        let _pe: Result<goblin::pe::PE, PEError> = match goblin::pe::PE::parse(buf)
+            .map_err(|e| PEError::BadResourceString(e.to_string()))
         {
-            goblin::Object::PE(pe) => {
+            Ok(pe) => {
                 if let Some(opt) = pe.header.optional_header {
                     if opt.data_directories.get_clr_runtime_header().is_some() {
                         return Err(PEError::FormatNotSupported(".NET assembly"));
@@ -614,10 +747,7 @@ pub mod pe_resource {
                 }
                 Ok(pe)
             }
-            goblin::Object::Elf(_) => Err(PEError::FormatNotSupported("elf")),
-            goblin::Object::Archive(_) => Err(PEError::FormatNotSupported("archive")),
-            goblin::Object::Mach(_) => Err(PEError::FormatNotSupported("macho")),
-            goblin::Object::Unknown(_) => Err(PEError::FormatNotSupported("unknown")),
+            _ => Err(PEError::FormatNotSupported("unknown")),
         };
 
         let pe = _pe?;
