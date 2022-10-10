@@ -1,4 +1,5 @@
 mod rsrc {
+    #[cfg(feature = "alloc")]
     use core::mem::size_of;
     use scroll::Pread;
     use thiserror::Error;
@@ -105,9 +106,7 @@ mod rsrc {
         }
 
         pub fn fmt_with_buffer(&self, buf: &[u8], f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            unsafe {
-                write!(f, "{}", self.to_string_with_buffer(buf))
-            }
+            write!(f, "{}", self.to_string_with_buffer(buf))
         }
 
         pub fn to_string_with_buffer(&self, buf: &[u8]) -> String {
@@ -199,12 +198,14 @@ mod rsrc {
         }
     }
 
+    #[allow(unused)]
     #[derive(Debug)]
     pub struct ImageResourceDirectoryRoot {
         id: ResourceIdType,
         sub_directories: Vec<ImageResourceEntry>,
     }
 
+    #[allow(unused)]
     #[derive(Debug)]
     pub enum ImageResourceEntry {
         Directory(ImageResourceDirectoryRoot),
@@ -212,13 +213,7 @@ mod rsrc {
     }
 
     impl ImageResourceEntry {
-        // unsafe fn read_counted_str(buf: &'a [u8], offset: usize) -> &'a U16Str {
-        //     // TODO: bounds check
-        //     let cch = buf.pread_with::<u16>(offset, scroll::LE).unwrap() as usize;
-        //     let str = &buf[offset + 2] as *const u8 as *const u16;
-        //     U16Str::from_ptr(str, cch)
-        // }
-
+        #[cfg(feature = "alloc")]
         pub fn parse(
             buf: &[u8],
             directory_offset: usize,
@@ -277,7 +272,18 @@ mod rsrc {
             })
         }
 
+        #[allow(unused)]
+        #[cfg(not(feature = "alloc"))]
+        pub fn parse(
+            buf: &[u8],
+            directory_offset: usize,
+            directory_id: ResourceIdType,
+        ) -> core::marker::PhantomData<u8> {
+            core::marker::PhantomData
+        }
+
         // Win32 FindResourceW
+        #[cfg(feature = "alloc")]
         pub fn find<T, U>(
             &self,
             name: &T,
@@ -333,7 +339,10 @@ pub mod pe_resource {
 
     #[derive(Debug)]
     pub struct ImageResource<'a> {
+        #[cfg(feature = "alloc")]
         resource: ImageResourceEntry,
+        #[cfg(not(feature = "alloc"))]
+        resource: core::marker::PhantomData<u8>,
         resource_section_table: goblin::pe::section_table::SectionTable,
         pub image_file: memmap2::Mmap,
         resource_table_offset: usize,
@@ -358,6 +367,7 @@ pub mod pe_resource {
     impl<'a> ImageResource<'a> {
         // Win32 FindResourceW
         // Wrapper around ImageResourceEntry::find that returns only the buffer slice for the found resource
+        #[cfg(feature = "alloc")]
         pub fn find<T, U>(&self, name: &T, id: &U) -> Result<ResourceData, PEError>
         where
             ResourceIdType: ResourceIdPartialEq<T>,
@@ -386,6 +396,25 @@ pub mod pe_resource {
                 }
                 None => Err(PEError::ResourceNameNotFound()),
             }
+        }
+
+        // Win32 FindResourceW
+        // Wrapper around ImageResourceEntry::find that returns only the buffer slice for the found resource
+        #[cfg(not(feature = "alloc"))]
+        pub fn find<T, U>(&self, name: &T, id: &U) -> Result<ResourceData, PEError>
+        where
+            ResourceIdType: ResourceIdPartialEq<T>,
+            ResourceIdType: ResourceIdPartialEq<U>,
+        {
+            let buf = &self.image_file[self.resource_table_offset..self.resource_table_end];
+
+            for resource in self.iter() {
+                if resource.name.eq_with_buffer(buf, name) && resource.id.eq_with_buffer(buf, id) {
+                    return Ok(resource.data);
+                }
+            }
+
+            Err(PEError::ResourceNameNotFound())
         }
 
         pub fn iter(&'a self) -> ImageResourceEnumerator<'a> {
@@ -643,7 +672,7 @@ pub mod pe_resource {
             image_file: mapped,
             resource_table_offset: offset,
             resource_table_end: end,
-            _phantom: std::marker::PhantomData {},
+            _phantom: core::marker::PhantomData {},
         })
     }
 }

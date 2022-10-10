@@ -7,6 +7,10 @@ description = "Find a resource from a PE image without loading it."
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+# Uses allocations to cache the parsed resource directory, for faster repeated searches.
+alloc = []
+
 [dependencies]
 goblin = {version="0.5", features=["pe32", "pe64"]}
 scroll = { version = "0.11", features = ["derive"] }
