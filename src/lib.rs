@@ -452,51 +452,43 @@ pub mod pe_resource {
             'a: 'x,
         {
             let buf = &self.image_file[self.resource_table_offset..self.resource_table_end];
-            CombinedIter(
-                if let ResourceIdType::Name(name) = resource_id {
-                    Some(IndexedStringIter {
-                        iter: name.clone().chars(buf),
+            match resource_id {
+                ResourceIdType::Name(name) => either::Left(IndexedStringIter {
+                    iter: name.clone().chars(buf),
+                }),
+                ResourceIdType::Id(id) => unsafe {
+                    let mut val = id;
+                    let ones = (val % 10) as u32;
+                    val /= 10;
+                    let tens = (val % 10) as u32;
+                    val /= 10;
+                    let hundreds = (val % 10) as u32;
+                    val /= 10;
+                    let thous = (val % 10) as u32;
+                    val /= 10;
+                    let ten_thous = (val % 10) as u32;
+                    either::Right(IdIter {
+                        chars: [
+                            char::from_u32_unchecked('0' as u32 + ten_thous),
+                            char::from_u32_unchecked('0' as u32 + thous),
+                            char::from_u32_unchecked('0' as u32 + hundreds),
+                            char::from_u32_unchecked('0' as u32 + tens),
+                            char::from_u32_unchecked('0' as u32 + ones),
+                        ],
+                        index: if ten_thous != 0 {
+                            0
+                        } else if thous != 0 {
+                            1
+                        } else if hundreds != 0 {
+                            2
+                        } else if tens != 0 {
+                            3
+                        } else {
+                            4
+                        },
                     })
-                } else {
-                    None
                 },
-                if let ResourceIdType::Id(id) = resource_id {
-                    unsafe {
-                        let mut val = id;
-                        let ones = (val % 10) as u32;
-                        val /= 10;
-                        let tens = (val % 10) as u32;
-                        val /= 10;
-                        let hundreds = (val % 10) as u32;
-                        val /= 10;
-                        let thous = (val % 10) as u32;
-                        val /= 10;
-                        let ten_thous = (val % 10) as u32;
-                        Some(IdIter {
-                            chars: [
-                                char::from_u32_unchecked('0' as u32 + ten_thous),
-                                char::from_u32_unchecked('0' as u32 + thous),
-                                char::from_u32_unchecked('0' as u32 + hundreds),
-                                char::from_u32_unchecked('0' as u32 + tens),
-                                char::from_u32_unchecked('0' as u32 + ones),
-                            ],
-                            index: if ten_thous != 0 {
-                                0
-                            } else if thous != 0 {
-                                1
-                            } else if hundreds != 0 {
-                                2
-                            } else if tens != 0 {
-                                3
-                            } else {
-                                4
-                            },
-                        })
-                    }
-                } else {
-                    None
-                },
-            )
+            }
         }
     }
 
@@ -507,31 +499,6 @@ pub mod pe_resource {
     struct IdIter {
         chars: [char; 5],
         index: usize,
-    }
-
-    struct CombinedIter<'a>(
-        Option<IndexedStringIter<widestring::iter::CharsLossy<'a>>>,
-        Option<IdIter>,
-    );
-
-    impl<'a> Iterator for CombinedIter<'a> {
-        type Item = char;
-
-        fn next(&mut self) -> Option<Self::Item> {
-            match &mut self.0 {
-                Some(iter) => match iter.next() {
-                    Some(x) => Some(x),
-                    None => None
-                },
-                None => match &mut self.1 {
-                    Some(iter2) => match iter2.next() {
-                        Some(c) => Some(c),
-                        None => None,
-                    },
-                    None => None,
-                },
-            }
-        }
     }
 
     impl<I: Iterator<Item = char>> Iterator for IndexedStringIter<I> {
