@@ -1,6 +1,4 @@
 mod rsrc {
-    #[cfg(feature = "alloc")]
-    use core::mem::size_of;
     use scroll::Pread;
     use thiserror::Error;
     use widestring::U16Str;
@@ -132,12 +130,6 @@ mod rsrc {
         }
     }
 
-    // impl std::fmt::Display for IndexedString {
-    //     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    //         let
-    //     }
-    // }
-
     pub trait ResourceIdPartialEq<Rhs: ?Sized = Self> {
         fn eq_with_buffer(&self, buf: &[u8], other: &Rhs) -> bool;
     }
@@ -214,136 +206,6 @@ mod rsrc {
             }
         }
     }
-
-    #[allow(unused)]
-    #[derive(Debug)]
-    pub struct ImageResourceDirectoryRoot {
-        id: ResourceIdType,
-        sub_directories: Vec<ImageResourceEntry>,
-    }
-
-    #[allow(unused)]
-    #[derive(Debug)]
-    pub enum ImageResourceEntry {
-        Directory(ImageResourceDirectoryRoot),
-        Data(ImageResourceDirectoryEntry),
-    }
-
-    impl ImageResourceEntry {
-        #[cfg(feature = "alloc")]
-        pub fn parse(
-            buf: &[u8],
-            directory_offset: usize,
-            directory_id: ResourceIdType,
-        ) -> ImageResourceEntry {
-            // We don't actually care about the other fields in this structure, only the two counts
-            let num_named_entries: u16 = buf.pread_with(directory_offset + 12, scroll::LE).unwrap();
-            let num_id_entries: u16 = buf.pread_with(directory_offset + 14, scroll::LE).unwrap();
-            let mut entries =
-                Vec::with_capacity(num_named_entries as usize + num_id_entries as usize);
-
-            let offset = directory_offset + size_of::<_ImageResourceDirectory>() as usize;
-
-            for i in 0..num_named_entries + num_id_entries {
-                let cur_offset = offset + size_of::<_ImageResourceDirectoryEntry>() * i as usize;
-
-                let entry: _ImageResourceDirectoryEntry =
-                    buf.pread_with(cur_offset, scroll::LE).unwrap();
-
-                let id = if entry.u1.name & 0x8000_0000 != 0 {
-                    // entry is a _NamedResourceEntry
-
-                    let name_offset = entry.u1.name & 0x7FFF_FFFF;
-                    let name = IndexedString::new(buf, name_offset as usize);
-                    ResourceIdType::Name(name)
-                } else {
-                    // entry is a _IdResourceEntry
-                    ResourceIdType::Id(entry.u1.name as u16)
-                };
-
-                if entry.u2.offset & 0x8000_0000 == 0 {
-                    // entry is not a subdirectory
-                    let offset_to_data_entry = entry.u2.offset as usize;
-
-                    let entry_data: _ImageResourceDataEntry =
-                        buf.pread_with(offset_to_data_entry, scroll::LE).unwrap();
-
-                    entries.push(ImageResourceEntry::Data(ImageResourceDirectoryEntry {
-                        id: id,
-                        code_page: entry_data.code_page,
-                        rva_to_data: entry_data.offset_to_data as usize,
-                        data_size: entry_data.size as usize,
-                    }));
-                } else {
-                    // entry is another directory
-                    let offset_to_subdirectory_entry = (entry.u2.offset & 0x7FFF_FFFF) as usize;
-                    let subdirectory = Self::parse(buf, offset_to_subdirectory_entry, id);
-
-                    entries.push(subdirectory);
-                }
-            }
-
-            ImageResourceEntry::Directory(ImageResourceDirectoryRoot {
-                id: directory_id,
-                sub_directories: entries,
-            })
-        }
-
-        #[allow(unused)]
-        #[cfg(not(feature = "alloc"))]
-        pub fn parse(
-            buf: &[u8],
-            directory_offset: usize,
-            directory_id: ResourceIdType,
-        ) -> core::marker::PhantomData<u8> {
-            core::marker::PhantomData
-        }
-
-        // Win32 FindResourceW
-        #[cfg(feature = "alloc")]
-        pub fn find<T, U>(
-            &self,
-            name: &T,
-            id: &U,
-            buf: &[u8],
-        ) -> Option<ImageResourceDirectoryEntry>
-        where
-            ResourceIdType: ResourceIdPartialEq<T>,
-            ResourceIdType: ResourceIdPartialEq<U>,
-        {
-            match self {
-                ImageResourceEntry::Directory(root) => {
-                    for item in root.sub_directories.iter() {
-                        if let ImageResourceEntry::Directory(dir) = item {
-                            if dir.id.eq_with_buffer(buf, name) {
-                                let x = dir.sub_directories.iter().find(|subdir| {
-                                    if let ImageResourceEntry::Directory(child) = subdir {
-                                        if child.id.eq_with_buffer(buf, id) {
-                                            true
-                                        } else {
-                                            false
-                                        }
-                                    } else {
-                                        false
-                                    }
-                                });
-                                if let Some(ImageResourceEntry::Directory(found_dir)) = x {
-                                    match found_dir.sub_directories.first().unwrap() {
-                                        ImageResourceEntry::Data(data) => {
-                                            return Some(data.clone())
-                                        }
-                                        _ => return None,
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    None
-                }
-                _ => None,
-            }
-        }
-    }
 }
 
 pub mod pe_resource {
@@ -356,10 +218,6 @@ pub mod pe_resource {
 
     #[derive(Debug)]
     pub struct ImageResource<'a> {
-        #[cfg(feature = "alloc")]
-        resource: ImageResourceEntry,
-        #[cfg(not(feature = "alloc"))]
-        resource: core::marker::PhantomData<u8>,
         resource_section_table: goblin::pe::section_table::SectionTable,
         pub image_file: memmap2::Mmap,
         resource_table_offset: usize,
@@ -382,39 +240,6 @@ pub mod pe_resource {
     }
 
     impl<'a> ImageResource<'a> {
-        // Win32 FindResourceW
-        // Wrapper around ImageResourceEntry::find that returns only the buffer slice for the found resource
-        #[cfg(feature = "alloc")]
-        pub fn find<T, U>(&self, name: &T, id: &U) -> Result<ResourceData, PEError>
-        where
-            ResourceIdType: ResourceIdPartialEq<T>,
-            ResourceIdType: ResourceIdPartialEq<U>,
-        {
-            match self.resource.find(
-                name,
-                id,
-                &self.image_file[self.resource_table_offset..self.resource_table_end],
-            ) {
-                Some(dir) => {
-                    // Since the RVA is relative to the loaded image layout rather than the raw image on disk,
-                    // we need to adjust the RVA by the difference between those two layouts.
-                    let rva_to_va_offset = (self.resource_section_table.virtual_address
-                        - self.resource_section_table.pointer_to_raw_data)
-                        as usize;
-
-                    let data = &self.image_file[dir.rva_to_data - rva_to_va_offset
-                        ..dir.rva_to_data - rva_to_va_offset + dir.data_size];
-
-                    Ok(ResourceData {
-                        id: dir.id,
-                        code_page: dir.code_page,
-                        buf: data,
-                    })
-                }
-                None => Err(PEError::ResourceNameNotFound()),
-            }
-        }
-
         // Win32 FindResourceW
         // Wrapper around ImageResourceEntry::find that returns only the buffer slice for the found resource
         #[cfg(not(feature = "alloc"))]
@@ -753,14 +578,7 @@ pub mod pe_resource {
             .name()
             .map_err(|e| PEError::BadResourceString(e.to_string()))?;
 
-        let resource = ImageResourceEntry::parse(
-            &buf[offset..end],
-            0,
-            ResourceIdType::Id(0), // ResourceIdType::Name(section_name.to_string()),
-        );
-
         Ok(ImageResource {
-            resource,
             resource_section_table,
             image_file: mapped,
             resource_table_offset: offset,
