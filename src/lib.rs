@@ -1,7 +1,6 @@
 mod rsrc {
     use scroll::Pread;
     use thiserror::Error;
-    use widestring::U16Str;
 
     #[derive(Error, Debug)]
     pub enum PEError {
@@ -104,28 +103,16 @@ mod rsrc {
         }
 
         #[cfg(feature = "alloc")]
-        pub fn fmt_with_buffer(
-            &self,
-            buf: &[u8],
-            f: &mut std::fmt::Formatter<'_>,
-        ) -> std::fmt::Result {
-            write!(f, "{}", self.to_string_with_buffer(buf))
-        }
-
-        #[cfg(feature = "alloc")]
         pub fn to_string_with_buffer(&self, buf: &[u8]) -> String {
-            unsafe {
-                let p = &buf[self.offset] as *const u8 as *const u16;
-                let name_str: &U16Str = U16Str::from_ptr(p, self.cch);
-                name_str.to_string().unwrap()
-            }
+            String::from_iter(self.chars(buf))
         }
 
-        pub fn chars(self, buf: &[u8]) -> widestring::iter::CharsLossy {
+        pub fn chars(self, buf: &[u8]) -> impl Iterator<Item = char> {
             unsafe {
                 let p = &buf[self.offset] as *const u8 as *const u16;
-                let name_str: &U16Str = U16Str::from_ptr(p, self.cch);
-                name_str.chars_lossy()
+                let chars = core::slice::from_raw_parts(p, self.cch);
+                char::decode_utf16(chars.iter().copied())
+                    .map(|r| r.unwrap_or(char::REPLACEMENT_CHARACTER)).fuse()
             }
         }
     }
@@ -166,19 +153,17 @@ mod rsrc {
         false
     }
 
-    fn compare_utf8_utf16_str(lhs: &str, rhs: &U16Str) -> bool {
-        let rhs_utf8 = rhs.chars_lossy();
-        lhs.chars().eq(rhs_utf8)
+    fn compare_utf8_utf16_str<T>(lhs: &str, rhs: T) -> bool
+    where
+        T: Iterator<Item = char>,
+    {
+        lhs.chars().eq(rhs)
     }
 
     impl ResourceIdPartialEq<&str> for ResourceIdType {
         fn eq_with_buffer(&self, buf: &[u8], name: &&str) -> bool {
             match self {
-                ResourceIdType::Name(x) => unsafe {
-                    let p = &buf[x.offset] as *const u8 as *const u16;
-                    let name_str: &U16Str = U16Str::from_ptr(p, x.cch);
-                    compare_utf8_utf16_str(*name, name_str)
-                },
+                ResourceIdType::Name(x) => compare_utf8_utf16_str(*name, x.chars(buf)),
                 ResourceIdType::Id(id) => compare_str_id(name.chars(), *id),
             }
         }
@@ -188,11 +173,7 @@ mod rsrc {
         fn eq_with_buffer(&self, buf: &[u8], id: &u16) -> bool {
             match self {
                 ResourceIdType::Id(x) => *x == *id,
-                ResourceIdType::Name(name) => unsafe {
-                    let p = &buf[name.offset] as *const u8 as *const u16;
-                    let name_str: &U16Str = U16Str::from_ptr(p, name.cch);
-                    compare_str_id(name_str.chars_lossy(), *id)
-                },
+                ResourceIdType::Name(name) => compare_str_id(name.chars(buf), *id),
             }
         }
     }
@@ -212,9 +193,9 @@ pub mod pe_resource {
     pub use crate::rsrc::PEError;
     pub use crate::rsrc::ResourceIdPartialEq;
     use crate::rsrc::*;
+    use core::iter::FusedIterator;
     use core::mem::size_of;
     use scroll::Pread;
-    use core::iter::FusedIterator;
 
     #[derive(Debug)]
     pub struct ImageResource<'a> {
@@ -278,9 +259,7 @@ pub mod pe_resource {
         {
             let buf = &self.image_file[self.resource_table_offset..self.resource_table_end];
             match resource_id {
-                ResourceIdType::Name(name) => either::Left(IndexedStringIter {
-                    iter: name.clone().chars(buf),
-                }),
+                ResourceIdType::Name(name) => either::Left(name.clone().chars(buf)),
                 ResourceIdType::Id(id) => unsafe {
                     let mut val = id;
                     let ones = (val % 10) as u32;
@@ -317,22 +296,12 @@ pub mod pe_resource {
         }
     }
 
-    struct IndexedStringIter<I> {
-        iter: I,
-    }
-
     struct IdIter {
         chars: [char; 5],
         index: usize,
     }
 
-    impl<I: Iterator<Item = char>> Iterator for IndexedStringIter<I> {
-        type Item = char;
-
-        fn next(&mut self) -> Option<Self::Item> {
-            self.iter.next()
-        }
-    }
+    impl FusedIterator for IdIter {}
 
     impl Iterator for IdIter {
         type Item = char;
@@ -460,7 +429,8 @@ pub mod pe_resource {
                 let rva_to_data = entry_data.offset_to_data as usize;
                 let data_size = entry_data.size as usize;
 
-                let data = &self.image_resource.image_file[rva_to_data - self.image_resource.rva_to_va_offset
+                let data = &self.image_resource.image_file[rva_to_data
+                    - self.image_resource.rva_to_va_offset
                     ..rva_to_data - self.image_resource.rva_to_va_offset + data_size];
 
                 let mut rsrc_name = ResourceIdType::Id(0);
