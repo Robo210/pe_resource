@@ -214,12 +214,12 @@ pub mod pe_resource {
     use crate::rsrc::*;
     use core::mem::size_of;
     use scroll::Pread;
-    use std::iter::FusedIterator;
+    use core::iter::FusedIterator;
 
     #[derive(Debug)]
     pub struct ImageResource<'a> {
-        resource_section_table: goblin::pe::section_table::SectionTable,
         pub image_file: memmap2::Mmap,
+        rva_to_va_offset: usize,
         resource_table_offset: usize,
         resource_table_end: usize,
         _phantom: std::marker::PhantomData<&'a u8>,
@@ -414,7 +414,7 @@ pub mod pe_resource {
                 if self.cur_dir[self.current_index].current_child_index
                     >= self.cur_dir[self.current_index].num_children
                 {
-                    // If the last item was the last in this directory, so return to the parent directory
+                    // If the last item was the last in this directory, return to the parent directory
                     if self.current_index > 0 {
                         self.current_index -= 1;
                     } else {
@@ -457,19 +457,11 @@ pub mod pe_resource {
                 let entry_data: _ImageResourceDataEntry =
                     buf.pread_with(offset_to_data_entry, scroll::LE).unwrap();
 
-                // Since the RVA is relative to the loaded image layout rather than the raw image on disk,
-                // we need to adjust the RVA by the difference between those two layouts.
-                let rva_to_va_offset = (self.image_resource.resource_section_table.virtual_address
-                    - self
-                        .image_resource
-                        .resource_section_table
-                        .pointer_to_raw_data) as usize;
-
                 let rva_to_data = entry_data.offset_to_data as usize;
                 let data_size = entry_data.size as usize;
 
-                let data = &self.image_resource.image_file
-                    [rva_to_data - rva_to_va_offset..rva_to_data - rva_to_va_offset + data_size];
+                let data = &self.image_resource.image_file[rva_to_data - self.image_resource.rva_to_va_offset
+                    ..rva_to_data - self.image_resource.rva_to_va_offset + data_size];
 
                 let mut rsrc_name = ResourceIdType::Id(0);
                 let mut rsrc_id = ResourceIdType::Id(0);
@@ -550,23 +542,15 @@ pub mod pe_resource {
         let resource_table_start = resource_table.virtual_address as usize;
         let resource_table_end = resource_table_start + resource_table.size as usize;
 
-        let mut resource_section: Option<goblin::pe::section_table::SectionTable> = None;
-
-        // Find the PE section that holds the resource table.
-        // We don't really need to do this, because the resource table will almost certainly exist at the
-        // very start of the section table, but it's a good sanity check anyway.
-
-        // PE section names are mostly meaningless, so looking for the ".rsrc" section by name may not work
-        for section in pe.sections {
-            if section.virtual_address as usize >= resource_table_start
-                && (section.virtual_address + section.virtual_size) as usize <= resource_table_end
-            {
-                resource_section = Some(section);
-                break;
-            }
-        }
-
-        let resource_section_table = resource_section.ok_or(PEError::NoResourceTable())?;
+        let resource_section_table = pe
+            .sections
+            .iter()
+            .find(|section| {
+                section.virtual_address as usize >= resource_table_start
+                    && (section.virtual_address + section.virtual_size) as usize
+                        <= resource_table_end
+            })
+            .ok_or(PEError::NoResourceTable())?;
 
         // offset will almost always == resource_section_table.pointer_to_raw_data,
         // because the resource table will start will start exactly at the start of the section
@@ -574,13 +558,18 @@ pub mod pe_resource {
             + resource_section_table.pointer_to_raw_data as usize;
         let end = offset + resource_section_table.virtual_size as usize;
 
+        // Since the RVA is relative to the loaded image layout rather than the raw image on disk,
+        // we need to adjust the RVA by the difference between those two layouts.
+        let rva_to_va_offset = (resource_section_table.virtual_address
+            - resource_section_table.pointer_to_raw_data) as usize;
+
         let _section_name = resource_section_table
             .name()
             .map_err(|e| PEError::BadResourceString(e.to_string()))?;
 
         Ok(ImageResource {
-            resource_section_table,
             image_file: mapped,
+            rva_to_va_offset,
             resource_table_offset: offset,
             resource_table_end: end,
             _phantom: core::marker::PhantomData {},
