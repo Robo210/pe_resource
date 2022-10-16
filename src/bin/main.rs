@@ -1,25 +1,11 @@
 use ::rsrc::*;
 
-fn main() -> Result<(), rsrc::PEError> {
-    let matches = clap::App::new("rsrc")
-        .arg(
-            clap::Arg::with_name("verbose")
-                .short("v")
-                .long("verbose")
-                .multiple(true)
-                .help("log verbose messages"),
-        )
-        .arg(
-            clap::Arg::with_name("input")
-                .required(true)
-                .index(1)
-                .help("path to input PE file"),
-        )
-        .get_matches();
+fn main() -> Result<(), pe_resource::PEError> {
+    let filename = std::env::args()
+        .nth(1)
+        .expect("missing argument 1: path to input PE file");
 
-    let filename = matches.value_of("input").unwrap();
-
-    let resources = rsrc::find_resource_directory_from_pe(filename)?;
+    let resources = pe_resource::find_resource_directory_from_pe(&filename)?;
 
     let pmres_data2 = resources.find(&"WEVT_TEMPLATE", &"#1")?;
     // let pmres_resource_data = pmres_data2.ok_or(rsrc::PEError::NoResourceTable())?;
@@ -28,6 +14,18 @@ fn main() -> Result<(), rsrc::PEError> {
         "pmres header: {:?}",
         std::str::from_utf8(&pmres_data2.buf[0..4]).unwrap_or("ERROR")
     );
+
+    println!("Resource tree:\n{:?}", resources);
+
+    for resource in resources.iter() {
+        //println!("Enumerated resource: {}/{}/{}", resources.to_string(resource.name), resources.to_string(resource.id), resources.to_string(resource.data.id));
+        println!(
+            "Enumerated resource: {}/{}/{}",
+            String::from_iter(resources.to_chars(resource.name)),
+            String::from_iter(resources.to_chars(resource.id)),
+            String::from_iter(resources.to_chars(resource.data.id))
+        );
+    }
 
     Ok(())
 }
