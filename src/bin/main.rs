@@ -1,11 +1,11 @@
-use ::rsrc::*;
+use ::pe_resource::*;
 
-fn main() -> Result<(), pe_resource::PEError> {
+fn main() -> Result<(), parser::PEError> {
     let filename = std::env::args()
         .nth(1)
         .expect("missing argument 1: path to input PE file");
 
-    let resources = pe_resource::find_resource_directory_from_pe(&filename)?;
+    let resources = parser::find_resource_directory_from_pe(&filename)?;
 
     let pmres_data2 = resources.find(&"WEVT_TEMPLATE", &"#1")?;
     // let pmres_resource_data = pmres_data2.ok_or(rsrc::PEError::NoResourceTable())?;

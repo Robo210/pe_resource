@@ -1,11 +1,12 @@
 #[cfg(test)]
 mod functional {
-    use rsrc::pe_resource::ResourceIdPartialEq;
+    use ::pe_resource::*;
+    use ::pe_resource::parser::ResourceIdPartialEq;
 
     #[test]
     #[cfg(target_os = "windows")]
-    fn wevtapi() -> Result<(), rsrc::pe_resource::PEError> {
-        let resource = rsrc::pe_resource::find_resource_directory_from_pe(
+    fn wevtapi() -> Result<(), parser::PEError> {
+        let resource = parser::find_resource_directory_from_pe(
             "C:\\windows\\system32\\wevtapi.dll",
         )?;
 
@@ -21,8 +22,8 @@ mod functional {
 
     #[test]
     #[cfg(target_os = "windows")]
-    fn wevtsvc() -> Result<(), rsrc::pe_resource::PEError> {
-        let resource = rsrc::pe_resource::find_resource_directory_from_pe(
+    fn wevtsvc() -> Result<(), parser::PEError> {
+        let resource = parser::find_resource_directory_from_pe(
             "C:\\windows\\system32\\wevtsvc.dll",
         )?;
 
@@ -38,8 +39,8 @@ mod functional {
 
     #[test]
     #[cfg(target_os = "windows")]
-    fn wevtapi_enum() -> Result<(), rsrc::pe_resource::PEError> {
-        let resources = rsrc::pe_resource::find_resource_directory_from_pe(
+    fn wevtapi_enum() -> Result<(), parser::PEError> {
+        let resources = parser::find_resource_directory_from_pe(
             "C:\\windows\\system32\\wevtapi.dll",
         )?;
 

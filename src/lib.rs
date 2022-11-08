@@ -1,14 +1,11 @@
 mod rsrc {
-    use scroll::Pread;
+    use plain::Plain;
     use thiserror::Error;
 
     #[derive(Error, Debug)]
     pub enum PEError {
-        #[error("format not supported: {0}")]
+        #[error("Format not supported: {0}")]
         FormatNotSupported(&'static str),
-
-        #[error("malformed PE file: {0}")]
-        MalformedPEFile(String),
 
         #[error("PE file does not contain a resource table")]
         NoResourceTable(),
@@ -19,7 +16,7 @@ mod rsrc {
         #[error("Resource with the provided name / ID not found")]
         ResourceNameNotFound(),
 
-        #[error("An error was returned when prasing the PE: {0}")]
+        #[error("An error was returned when parsing the PE: {0}")]
         GoblinError(goblin::error::Error),
     }
 
@@ -36,7 +33,6 @@ mod rsrc {
     }
 
     #[repr(C)]
-    #[derive(Pread)]
     pub struct _NamedResourceEntry {
         pub name: u32, // high-bit: 1, bits 0-31: offset
     }
@@ -48,7 +44,6 @@ mod rsrc {
     }
 
     #[repr(C)]
-    #[derive(Pread)]
     pub struct _DataDirectoryEntry {
         pub offset: u32, // high-bit: 0, bits 0-31: offset
     }
@@ -60,21 +55,23 @@ mod rsrc {
 
     // struct _IMAGE_RESOURCE_DIRECTORY_ENTRY, winnt.h
     #[repr(C)]
-    #[derive(Pread)]
     pub struct _ImageResourceDirectoryEntry {
         pub u1: _NamedResourceEntry, // union _NamedResourceEntry / _IdResourceEntry
         pub u2: _DataDirectoryEntry, // union _DataDirectoryEntry / _SubDirectoryEntry
     }
 
+    unsafe impl Plain for _ImageResourceDirectoryEntry {}
+
     // struct _IMAGE_RESOURCE_DATA_ENTRY, winnt.h
     #[repr(C)]
-    #[derive(Pread)]
     pub struct _ImageResourceDataEntry {
         pub offset_to_data: u32, // offset 0
         pub size: u32,           // offset 4
         pub code_page: u32,      // offset 8
         _reserved: u32,          // offset 12
     }
+
+    unsafe impl Plain for _ImageResourceDataEntry {}
 
     #[derive(Debug, Clone)]
     pub struct ImageResourceDirectoryEntry {
@@ -92,7 +89,7 @@ mod rsrc {
 
     impl IndexedString {
         pub fn new(buf: &[u8], offset: usize) -> IndexedString {
-            let cch = buf.pread_with::<u16>(offset, scroll::LE).unwrap() as usize;
+            let cch = *u16::from_bytes(&buf[offset..]).unwrap() as usize;
             if (cch * 2) + offset + 2 > buf.len() {
                 panic!("oh noes");
             }
@@ -189,13 +186,13 @@ mod rsrc {
     }
 }
 
-pub mod pe_resource {
+pub mod parser {
     pub use crate::rsrc::PEError;
     pub use crate::rsrc::ResourceIdPartialEq;
     use crate::rsrc::*;
     use core::iter::FusedIterator;
     use core::mem::size_of;
-    use scroll::Pread;
+    use plain::Plain;
 
     #[derive(Debug)]
     pub struct ImageResource<'a> {
@@ -343,8 +340,8 @@ pub mod pe_resource {
         pub fn new(image_resource: &'a ImageResource) -> ImageResourceEnumerator<'a> {
             let buf: &[u8] = &image_resource.image_file
                 [image_resource.resource_table_offset..image_resource.resource_table_end];
-            let num_named_entries: u16 = buf.pread_with(12, scroll::LE).unwrap();
-            let num_id_entries: u16 = buf.pread_with(14, scroll::LE).unwrap();
+            let num_named_entries = *u16::from_bytes(&buf[12..]).unwrap();
+            let num_id_entries = *u16::from_bytes(&buf[14..]).unwrap();
 
             ImageResourceEnumerator {
                 image_resource,
@@ -405,8 +402,7 @@ pub mod pe_resource {
 
             let cur_offset = offset + size_of::<_ImageResourceDirectoryEntry>() * i as usize;
 
-            let entry: _ImageResourceDirectoryEntry =
-                buf.pread_with(cur_offset, scroll::LE).unwrap();
+            let entry = _ImageResourceDirectoryEntry::from_bytes(&buf[cur_offset..]).unwrap();
 
             let id = if entry.u1.name & 0x8000_0000 != 0 {
                 // entry is a _NamedResourceEntry
@@ -423,8 +419,7 @@ pub mod pe_resource {
                 // entry is not a subdirectory
                 let offset_to_data_entry = entry.u2.offset as usize;
 
-                let entry_data: _ImageResourceDataEntry =
-                    buf.pread_with(offset_to_data_entry, scroll::LE).unwrap();
+                let entry_data = _ImageResourceDataEntry::from_bytes(&buf[offset_to_data_entry..]).unwrap();
 
                 let rva_to_data = entry_data.offset_to_data as usize;
                 let data_size = entry_data.size as usize;
@@ -455,13 +450,9 @@ pub mod pe_resource {
                 }
 
                 let offset_to_subdirectory_entry = (entry.u2.offset & 0x7FFF_FFFF) as usize;
-                let num_named_entries: u16 = buf
-                    .pread_with(offset_to_subdirectory_entry + 12, scroll::LE)
-                    .unwrap();
-                let num_id_entries: u16 = buf
-                    .pread_with(offset_to_subdirectory_entry + 14, scroll::LE)
-                    .unwrap();
-
+                let num_named_entries: u16 = *u16::from_bytes(&buf[offset_to_subdirectory_entry + 12..]).unwrap();
+                let num_id_entries: u16 = *u16::from_bytes(&buf[offset_to_subdirectory_entry + 14..]).unwrap();
+                
                 self.current_index += 1;
                 self.cur_dir[self.current_index] = CurrentDirectoryState {
                     id,
