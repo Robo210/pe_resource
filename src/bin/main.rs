@@ -17,7 +17,7 @@ fn main() -> Result<(), parser::PEError> {
 
     println!("Resource tree:\n{:?}", resources);
 
-    for resource in resources.iter() {
+    for resource in &resources {
         //println!("Enumerated resource: {}/{}/{}", resources.to_string(resource.name), resources.to_string(resource.id), resources.to_string(resource.data.id));
         println!(
             "Enumerated resource: {}/{}/{}",

@@ -1,4 +1,5 @@
 mod rsrc {
+    use core::fmt::Write;
     use plain::Plain;
     use thiserror::Error;
 
@@ -74,53 +75,51 @@ mod rsrc {
     unsafe impl Plain for _ImageResourceDataEntry {}
 
     #[derive(Debug, Clone)]
-    pub struct ImageResourceDirectoryEntry {
-        pub id: ResourceIdType,
+    pub struct ImageResourceDirectoryEntry<'a> {
+        pub id: ResourceIdType<'a>,
         pub code_page: u32,
         pub rva_to_data: usize, // relative to the start of the section / resource directory
         pub data_size: usize,
     }
 
     #[derive(Debug, Copy, Clone)]
-    pub struct IndexedString {
-        pub offset: usize,
-        pub cch: usize,
+    pub struct IndexedString<'a> {
+        buf: &'a [u16],
     }
 
-    impl IndexedString {
+    impl<'a> IndexedString<'a> {
         pub fn new(buf: &[u8], offset: usize) -> IndexedString {
             let cch = *u16::from_bytes(&buf[offset..]).unwrap() as usize;
             if (cch * 2) + offset + 2 > buf.len() {
                 panic!("oh noes");
             }
-            IndexedString {
-                offset: offset + 2,
-                cch,
-            }
-        }
-
-        #[cfg(feature = "alloc")]
-        pub fn to_string_with_buffer(&self, buf: &[u8]) -> String {
-            String::from_iter(self.chars(buf))
-        }
-
-        pub fn chars(self, buf: &[u8]) -> impl Iterator<Item = char> {
             unsafe {
-                let p = &buf[self.offset] as *const u8 as *const u16;
-                let chars = core::slice::from_raw_parts(p, self.cch);
-                char::decode_utf16(chars.iter().copied())
-                    .map(|r| r.unwrap_or(char::REPLACEMENT_CHARACTER)).fuse()
+                let u16_buf: &[u16] =
+                    core::slice::from_raw_parts((&buf[offset + 2..]).as_ptr() as *const u16, cch);
+                IndexedString { buf: u16_buf }
             }
+        }
+
+        pub fn chars(&self) -> impl Iterator<Item = char> + 'a {
+            char::decode_utf16(self.buf.iter().copied())
+                .map(|r| r.unwrap_or(char::REPLACEMENT_CHARACTER))
+                .fuse()
         }
     }
 
-    pub trait ResourceIdPartialEq<Rhs: ?Sized = Self> {
-        fn eq_with_buffer(&self, buf: &[u8], other: &Rhs) -> bool;
+    impl<'a> core::fmt::Display for IndexedString<'a> {
+        fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+            for c in self.chars() {
+                f.write_char(c)?;
+            }
+
+            Ok(())
+        }
     }
 
     #[derive(Debug, Copy, Clone)]
-    pub enum ResourceIdType {
-        Name(IndexedString),
+    pub enum ResourceIdType<'a> {
+        Name(IndexedString<'a>),
         Id(u16),
     }
 
@@ -157,30 +156,29 @@ mod rsrc {
         lhs.chars().eq(rhs)
     }
 
-    impl ResourceIdPartialEq<&str> for ResourceIdType {
-        fn eq_with_buffer(&self, buf: &[u8], name: &&str) -> bool {
+    impl<'a> PartialEq<&str> for ResourceIdType<'a> {
+        fn eq(&self, name: &&str) -> bool {
             match self {
-                ResourceIdType::Name(x) => compare_utf8_utf16_str(*name, x.chars(buf)),
+                ResourceIdType::Name(x) => compare_utf8_utf16_str(*name, x.chars()),
                 ResourceIdType::Id(id) => compare_str_id(name.chars(), *id),
             }
         }
     }
 
-    impl ResourceIdPartialEq<u16> for ResourceIdType {
-        fn eq_with_buffer(&self, buf: &[u8], id: &u16) -> bool {
+    impl<'a> PartialEq<u16> for ResourceIdType<'a> {
+        fn eq(&self, id: &u16) -> bool {
             match self {
                 ResourceIdType::Id(x) => *x == *id,
-                ResourceIdType::Name(name) => compare_str_id(name.chars(buf), *id),
+                ResourceIdType::Name(name) => compare_str_id(name.chars(), *id),
             }
         }
     }
 
-    impl ResourceIdType {
-        #[cfg(feature = "alloc")]
-        pub fn to_string_with_buffer(&self, buf: &[u8]) -> String {
+    impl<'a> core::fmt::Display for ResourceIdType<'a> {
+        fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
             match self {
-                ResourceIdType::Id(x) => x.to_string(),
-                ResourceIdType::Name(name) => name.to_string_with_buffer(buf),
+                ResourceIdType::Id(x) => write!(f, "{}", x),
+                ResourceIdType::Name(name) => write!(f, "{}", name),
             }
         }
     }
@@ -188,7 +186,6 @@ mod rsrc {
 
 pub mod parser {
     pub use crate::rsrc::PEError;
-    pub use crate::rsrc::ResourceIdPartialEq;
     use crate::rsrc::*;
     use core::iter::FusedIterator;
     use core::mem::size_of;
@@ -196,40 +193,37 @@ pub mod parser {
 
     #[derive(Debug)]
     pub struct ImageResource<'a> {
-        pub image_file: memmap2::Mmap,
+        image_file: memmap2::Mmap,
         rva_to_va_offset: usize,
         resource_table_offset: usize,
         resource_table_end: usize,
-        _phantom: std::marker::PhantomData<&'a u8>,
+        _phantom: core::marker::PhantomData<&'a u8>,
     }
 
     #[derive(Debug)]
     pub struct ResourceData<'a> {
-        pub id: ResourceIdType, // The resource compiler likes to put the LANGUAGE value as the ID, not the code page
-        pub code_page: u32,     // Usually zero?
+        pub id: ResourceIdType<'a>, // The resource compiler likes to put the LANGUAGE value as the ID, not the code page
+        pub code_page: u32,         // Usually zero?
         pub buf: &'a [u8],
     }
 
     #[derive(Debug)]
     pub struct Resource<'a> {
-        pub name: ResourceIdType,
-        pub id: ResourceIdType,
+        pub name: ResourceIdType<'a>,
+        pub id: ResourceIdType<'a>,
         pub data: ResourceData<'a>,
     }
 
     impl<'a> ImageResource<'a> {
         // Win32 FindResourceW
         // Wrapper around ImageResourceEntry::find that returns only the buffer slice for the found resource
-        #[cfg(not(feature = "alloc"))]
-        pub fn find<T, U>(&self, name: &T, id: &U) -> Result<ResourceData, PEError>
+        pub fn find<T, U>(&'a self, name: &T, id: &U) -> Result<ResourceData, PEError>
         where
-            ResourceIdType: ResourceIdPartialEq<T>,
-            ResourceIdType: ResourceIdPartialEq<U>,
+            ResourceIdType<'a>: PartialEq<T>,
+            ResourceIdType<'a>: PartialEq<U>,
         {
-            let buf = &self.image_file[self.resource_table_offset..self.resource_table_end];
-
-            for resource in self.iter() {
-                if resource.name.eq_with_buffer(buf, name) && resource.id.eq_with_buffer(buf, id) {
+            for resource in self {
+                if resource.name.eq(name) && resource.id.eq(id) {
                     return Ok(resource.data);
                 }
             }
@@ -237,26 +231,15 @@ pub mod parser {
             Err(PEError::ResourceNameNotFound())
         }
 
-        pub fn iter(&'a self) -> ImageResourceEnumerator<'a> {
-            self.into_iter()
-        }
-
-        #[cfg(feature = "alloc")]
-        pub fn to_string(&self, resource_id: ResourceIdType) -> String {
-            let buf = &self.image_file[self.resource_table_offset..self.resource_table_end];
-            resource_id.to_string_with_buffer(buf)
-        }
-
         pub fn to_chars<'x>(
             &'a self,
-            resource_id: ResourceIdType,
+            resource_id: ResourceIdType<'a>,
         ) -> impl Iterator<Item = char> + 'x
         where
             'a: 'x,
         {
-            let buf = &self.image_file[self.resource_table_offset..self.resource_table_end];
             match resource_id {
-                ResourceIdType::Name(name) => either::Left(name.clone().chars(buf)),
+                ResourceIdType::Name(name) => either::Left(name.clone().chars()),
                 ResourceIdType::Id(id) => unsafe {
                     let mut val = id;
                     let ones = (val % 10) as u32;
@@ -323,8 +306,8 @@ pub mod parser {
         }
     }
 
-    struct CurrentDirectoryState {
-        id: ResourceIdType,
+    struct CurrentDirectoryState<'a> {
+        id: ResourceIdType<'a>,
         directory_offset: usize,
         current_child_index: u16,
         num_children: u16,
@@ -332,8 +315,8 @@ pub mod parser {
 
     pub struct ImageResourceEnumerator<'a> {
         image_resource: &'a ImageResource<'a>,
-        current_index: usize,                // Current index into cur_dir
-        cur_dir: [CurrentDirectoryState; 3], // Arbitrary depth limit of 3 nested directories
+        current_index: usize,                    // Current index into cur_dir
+        cur_dir: [CurrentDirectoryState<'a>; 3], // Arbitrary depth limit of 3 nested directories
     }
 
     impl<'a> ImageResourceEnumerator<'a> {
@@ -419,7 +402,8 @@ pub mod parser {
                 // entry is not a subdirectory
                 let offset_to_data_entry = entry.u2.offset as usize;
 
-                let entry_data = _ImageResourceDataEntry::from_bytes(&buf[offset_to_data_entry..]).unwrap();
+                let entry_data =
+                    _ImageResourceDataEntry::from_bytes(&buf[offset_to_data_entry..]).unwrap();
 
                 let rva_to_data = entry_data.offset_to_data as usize;
                 let data_size = entry_data.size as usize;
@@ -450,9 +434,11 @@ pub mod parser {
                 }
 
                 let offset_to_subdirectory_entry = (entry.u2.offset & 0x7FFF_FFFF) as usize;
-                let num_named_entries: u16 = *u16::from_bytes(&buf[offset_to_subdirectory_entry + 12..]).unwrap();
-                let num_id_entries: u16 = *u16::from_bytes(&buf[offset_to_subdirectory_entry + 14..]).unwrap();
-                
+                let num_named_entries: u16 =
+                    *u16::from_bytes(&buf[offset_to_subdirectory_entry + 12..]).unwrap();
+                let num_id_entries: u16 =
+                    *u16::from_bytes(&buf[offset_to_subdirectory_entry + 14..]).unwrap();
+
                 self.current_index += 1;
                 self.cur_dir[self.current_index] = CurrentDirectoryState {
                     id,
