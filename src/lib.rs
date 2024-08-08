@@ -74,6 +74,7 @@ mod rsrc {
 
     unsafe impl Plain for _ImageResourceDataEntry {}
 
+    #[allow(dead_code)]
     #[derive(Debug, Clone)]
     pub struct ImageResourceDirectoryEntry<'a> {
         pub id: ResourceIdType<'a>,
@@ -463,7 +464,12 @@ pub mod parser {
             panic!("file too small: {}", filename);
         }
 
-        let _pe: Result<goblin::pe::PE, PEError> = match goblin::pe::PE::parse(buf)
+        let pe_opts = goblin::pe::options::ParseOptions {
+            resolve_rva: true,
+            parse_attribute_certificates: false
+        };
+
+        let _pe: Result<goblin::pe::PE, PEError> = match goblin::pe::PE::parse_with_opts(buf, &pe_opts)
             .map_err(|e| PEError::BadResourceString(e.to_string()))
         {
             Ok(pe) => {

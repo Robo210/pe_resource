@@ -13,10 +13,10 @@ description = "Find a resource from a PE image without loading it."
 alloc = []
 
 [dependencies]
-goblin = {version="0.5", default-features = false, features=["pe32", "pe64"]}
+goblin = {version="0.8", default-features = false, features=["pe32", "pe64"]}
 anyhow = { version="1", default-features = false }
 thiserror = "1"
-memmap2 = "0.5"
+memmap2 = "0.9"
 either = { version="1.8", default-features = false }
 plain = "0.2"
 
