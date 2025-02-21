@@ -4,6 +4,8 @@ version = "0.2.0"
 edition = "2021"
 authors = ["Kyle Sabo"]
 description = "Find a resource from a PE image without loading it."
+# 1.82 adds use<>, which is required to make the code also compile with edition 2024 (1.85+)
+rust-version = "1.82"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

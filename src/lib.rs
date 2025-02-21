@@ -101,7 +101,7 @@ mod rsrc {
             }
         }
 
-        pub fn chars(&self) -> impl Iterator<Item = char> + 'a {
+        pub fn chars(&self) -> impl Iterator<Item = char> + use<'a> {
             char::decode_utf16(self.buf.iter().copied())
                 .map(|r| r.unwrap_or(char::REPLACEMENT_CHARACTER))
                 .fuse()
@@ -218,7 +218,7 @@ pub mod parser {
     impl<'a> ImageResource<'a> {
         // Win32 FindResourceW
         // Wrapper around ImageResourceEntry::find that returns only the buffer slice for the found resource
-        pub fn find<T, U>(&'a self, name: &T, id: &U) -> Result<ResourceData, PEError>
+        pub fn find<T, U>(&'a self, name: &T, id: &U) -> Result<ResourceData<'a>, PEError>
         where
             ResourceIdType<'a>: PartialEq<T>,
             ResourceIdType<'a>: PartialEq<U>,
@@ -235,7 +235,7 @@ pub mod parser {
         pub fn to_chars<'x>(
             &'a self,
             resource_id: ResourceIdType<'a>,
-        ) -> impl Iterator<Item = char> + 'x
+        ) -> impl Iterator<Item = char> + use<'a>
         where
             'a: 'x,
         {
