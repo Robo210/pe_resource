@@ -89,14 +89,14 @@ mod rsrc {
     }
 
     impl<'a> IndexedString<'a> {
-        pub fn new(buf: &[u8], offset: usize) -> IndexedString {
+        pub fn new(buf: &[u8], offset: usize) -> IndexedString<'_> {
             let cch = *u16::from_bytes(&buf[offset..]).unwrap() as usize;
             if (cch * 2) + offset + 2 > buf.len() {
                 panic!("oh noes");
             }
             unsafe {
                 let u16_buf: &[u16] =
-                    core::slice::from_raw_parts((&buf[offset + 2..]).as_ptr() as *const u16, cch);
+                    core::slice::from_raw_parts((buf[offset + 2..]).as_ptr() as *const u16, cch);
                 IndexedString { buf: u16_buf }
             }
         }
@@ -134,7 +134,7 @@ mod rsrc {
                 let mut has_value = false;
                 for x in chars {
                     let x = u32::from(x) as u16; // TODO: Check for u16 overflow
-                    if x >= 48 && x <= 57 {
+                    if (48..=57).contains(&x) {
                         // '0' through '9'
                         parsed_id = parsed_id * 10 + (x - 48); // TODO: Check for u16 overflow
                         has_value = true;
@@ -160,7 +160,7 @@ mod rsrc {
     impl<'a> PartialEq<&str> for ResourceIdType<'a> {
         fn eq(&self, name: &&str) -> bool {
             match self {
-                ResourceIdType::Name(x) => compare_utf8_utf16_str(*name, x.chars()),
+                ResourceIdType::Name(x) => compare_utf8_utf16_str(name, x.chars()),
                 ResourceIdType::Id(id) => compare_str_id(name.chars(), *id),
             }
         }
@@ -382,7 +382,7 @@ pub mod parser {
 
             self.cur_dir[self.current_index].current_child_index += 1;
 
-            let offset = directory_offset + size_of::<_ImageResourceDirectory>() as usize;
+            let offset = directory_offset + size_of::<_ImageResourceDirectory>();
 
             let cur_offset = offset + size_of::<_ImageResourceDirectoryEntry>() * i as usize;
 
@@ -453,7 +453,7 @@ pub mod parser {
         }
     }
 
-    pub fn find_resource_directory_from_pe(filename: &str) -> Result<ImageResource, PEError> {
+    pub fn find_resource_directory_from_pe(filename: &str) -> Result<ImageResource<'_>, PEError> {
         let file =
             std::fs::File::open(filename).map_err(|e| PEError::BadResourceString(e.to_string()))?;
         let mapped = unsafe {
