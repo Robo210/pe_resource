@@ -15,9 +15,8 @@ rust-version = "1.82"
 alloc = []
 
 [dependencies]
-goblin = {version="0.8", default-features = false, features=["pe32", "pe64"]}
-anyhow = { version="1", default-features = false }
-thiserror = "1"
+goblin = {version="0.10", default-features = false, features=["pe32", "pe64"]}
+thiserror = { version="2", default-feature = false }
 memmap2 = "0.9"
 either = { version="1.8", default-features = false }
 plain = "0.2"
@@ -28,6 +27,6 @@ debug = false
 lto = "fat"
 incremental = false
 debug-assertions = false
-overflow-checks = false
+#overflow-checks = false
 panic = "abort"
 rpath = false
