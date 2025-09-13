@@ -475,7 +475,8 @@ pub mod parser {
             panic!("file too small: {}", filename);
         }
 
-        let mut pe_opts = goblin::pe::options::ParseOptions::default().with_parse_mode(goblin::pe::options::ParseMode::Permissive);
+        let mut pe_opts = goblin::pe::options::ParseOptions::default()
+            .with_parse_mode(goblin::pe::options::ParseMode::Permissive);
         pe_opts.parse_attribute_certificates = false;
         pe_opts.parse_tls_data = false;
 
