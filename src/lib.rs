@@ -133,15 +133,26 @@ mod rsrc {
                 let mut parsed_id: u16 = 0;
                 let mut has_value = false;
                 for x in chars {
-                    let x = u32::from(x) as u16; // TODO: Check for u16 overflow
-                    if (48..=57).contains(&x) {
-                        // '0' through '9'
-                        parsed_id = parsed_id * 10 + (x - 48); // TODO: Check for u16 overflow
-                        has_value = true;
-                    } else if x == 0 {
-                        break;
-                    } else {
-                        return false;
+                    match u16::try_from(x) {
+                        Err(_) => return false,
+                        Ok(x) => {
+                            if (48..=57).contains(&x) {
+                                // '0' through '9'
+                                if let Some(new_parsed_id) = parsed_id
+                                    .checked_mul(10)
+                                    .and_then(|v| v.checked_add(x - 48))
+                                {
+                                    parsed_id = new_parsed_id;
+                                    has_value = true;
+                                } else {
+                                    return false;
+                                }
+                            } else if x == 0 {
+                                break;
+                            } else {
+                                return false;
+                            }
+                        }
                     }
                 }
                 return has_value && parsed_id == id;
@@ -466,22 +477,23 @@ pub mod parser {
 
         let pe_opts = goblin::pe::options::ParseOptions {
             resolve_rva: true,
-            parse_attribute_certificates: false
+            parse_attribute_certificates: false,
         };
 
-        let _pe: Result<goblin::pe::PE, PEError> = match goblin::pe::PE::parse_with_opts(buf, &pe_opts)
-            .map_err(|e| PEError::BadResourceString(e.to_string()))
-        {
-            Ok(pe) => {
-                if let Some(opt) = pe.header.optional_header {
-                    if opt.data_directories.get_clr_runtime_header().is_some() {
-                        return Err(PEError::FormatNotSupported(".NET assembly"));
+        let _pe: Result<goblin::pe::PE, PEError> =
+            match goblin::pe::PE::parse_with_opts(buf, &pe_opts)
+                .map_err(|e| PEError::BadResourceString(e.to_string()))
+            {
+                Ok(pe) => {
+                    if let Some(opt) = pe.header.optional_header {
+                        if opt.data_directories.get_clr_runtime_header().is_some() {
+                            return Err(PEError::FormatNotSupported(".NET assembly"));
+                        }
                     }
+                    Ok(pe)
                 }
-                Ok(pe)
-            }
-            _ => Err(PEError::FormatNotSupported("unknown")),
-        };
+                _ => Err(PEError::FormatNotSupported("unknown")),
+            };
 
         let pe = _pe?;
 
