@@ -19,7 +19,8 @@ goblin = {version="0.10", default-features = false, features=["pe32", "pe64"]}
 thiserror = { version="2", default-feature = false }
 memmap2 = "0.9"
 either = { version="1.8", default-features = false }
-plain = "0.2"
+zerocopy = "0.8"
+zerocopy-derive = "0.8"
 
 [profile.release]
 opt-level = "s"

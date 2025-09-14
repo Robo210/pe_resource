@@ -1,7 +1,8 @@
 mod rsrc {
     use core::fmt::Write;
-    use plain::Plain;
     use thiserror::Error;
+    use zerocopy::FromBytes;
+    use zerocopy_derive::{FromBytes, Immutable, KnownLayout};
 
     #[derive(Error, Debug)]
     pub enum PEError {
@@ -19,6 +20,9 @@ mod rsrc {
 
         #[error("An error was returned when parsing the PE: {0}")]
         GoblinError(goblin::error::Error),
+
+        #[error("The resource data is too small to contain the expected structure (size {0}, offset {1}, required at least {2})")]
+        BufferSizeError(usize, usize, usize),
     }
 
     // struct _IMAGE_RESOURCE_DIRECTORY, winnt.h
@@ -34,6 +38,7 @@ mod rsrc {
     }
 
     #[repr(C)]
+    #[derive(FromBytes, Immutable, KnownLayout)]
     pub struct _NamedResourceEntry {
         pub name: u32, // high-bit: 1, bits 0-31: offset
     }
@@ -45,6 +50,7 @@ mod rsrc {
     }
 
     #[repr(C)]
+    #[derive(FromBytes, Immutable, KnownLayout)]
     pub struct _DataDirectoryEntry {
         pub offset: u32, // high-bit: 0, bits 0-31: offset
     }
@@ -56,23 +62,21 @@ mod rsrc {
 
     // struct _IMAGE_RESOURCE_DIRECTORY_ENTRY, winnt.h
     #[repr(C)]
+    #[derive(FromBytes, Immutable, KnownLayout)]
     pub struct _ImageResourceDirectoryEntry {
         pub u1: _NamedResourceEntry, // union _NamedResourceEntry / _IdResourceEntry
         pub u2: _DataDirectoryEntry, // union _DataDirectoryEntry / _SubDirectoryEntry
     }
 
-    unsafe impl Plain for _ImageResourceDirectoryEntry {}
-
     // struct _IMAGE_RESOURCE_DATA_ENTRY, winnt.h
     #[repr(C)]
+    #[derive(FromBytes, Immutable, KnownLayout)]
     pub struct _ImageResourceDataEntry {
         pub offset_to_data: u32, // offset 0
         pub size: u32,           // offset 4
         pub code_page: u32,      // offset 8
         _reserved: u32,          // offset 12
     }
-
-    unsafe impl Plain for _ImageResourceDataEntry {}
 
     #[allow(dead_code)]
     #[derive(Debug, Clone)]
@@ -89,15 +93,33 @@ mod rsrc {
     }
 
     impl<'a> IndexedString<'a> {
-        pub fn new(buf: &[u8], offset: usize) -> IndexedString<'_> {
-            let cch = *u16::from_bytes(&buf[offset..]).unwrap() as usize;
-            if (cch * 2) + offset + 2 > buf.len() {
-                panic!("oh noes");
+        pub fn try_parse(buf: &[u8], offset: usize) -> Result<IndexedString<'_>, PEError> {
+            let cch = match u16::ref_from_bytes(&buf[offset..(offset + size_of::<u16>())]) {
+                Ok(cch) => *cch,
+                Err(_) => {
+                    return Err(PEError::BufferSizeError(
+                        buf.len(),
+                        offset,
+                        size_of::<u16>(),
+                    ));
+                }
+            } as usize;
+
+            if (cch * size_of::<u16>()) + offset + size_of::<u16>() > buf.len() {
+                return Err(PEError::BufferSizeError(
+                    buf.len(),
+                    offset,
+                    (cch * size_of::<u16>()) + size_of::<u16>(),
+                ));
             }
+
+            // SAFETY: We verified that the remaining buffer is large enough to hold cch u16 characters
             unsafe {
-                let u16_buf: &[u16] =
-                    core::slice::from_raw_parts((buf[offset + 2..]).as_ptr() as *const u16, cch);
-                IndexedString { buf: u16_buf }
+                let u16_buf: &[u16] = core::slice::from_raw_parts(
+                    (buf[offset + size_of::<u16>()..]).as_ptr() as *const u16,
+                    cch,
+                );
+                Ok(IndexedString { buf: u16_buf })
             }
         }
 
@@ -201,7 +223,7 @@ pub mod parser {
     use crate::rsrc::*;
     use core::iter::FusedIterator;
     use core::mem::size_of;
-    use plain::Plain;
+    use zerocopy::FromBytes;
 
     #[derive(Debug)]
     pub struct ImageResource<'a> {
@@ -234,7 +256,9 @@ pub mod parser {
             ResourceIdType<'a>: PartialEq<T>,
             ResourceIdType<'a>: PartialEq<U>,
         {
-            for resource in self {
+            let resources = self.try_into_iter()?;
+            for resource in resources {
+                let resource = resource?;
                 if resource.name.eq(name) && resource.id.eq(id) {
                     return Ok(resource.data);
                 }
@@ -286,6 +310,11 @@ pub mod parser {
                 },
             }
         }
+
+        // Since we are lazy-parsing, this can fail if the resource is malformed
+        pub fn try_into_iter(&'a self) -> Result<ImageResourceEnumerator<'a>, PEError> {
+            ImageResourceEnumerator::try_parse(&self)
+        }
     }
 
     struct IdIter {
@@ -309,15 +338,6 @@ pub mod parser {
         }
     }
 
-    impl<'a> IntoIterator for &'a ImageResource<'a> {
-        type Item = <ImageResourceEnumerator<'a> as Iterator>::Item;
-        type IntoIter = ImageResourceEnumerator<'a>;
-
-        fn into_iter(self) -> Self::IntoIter {
-            ImageResourceEnumerator::new(self)
-        }
-    }
-
     struct CurrentDirectoryState<'a> {
         id: ResourceIdType<'a>,
         directory_offset: usize,
@@ -332,13 +352,40 @@ pub mod parser {
     }
 
     impl<'a> ImageResourceEnumerator<'a> {
-        pub fn new(image_resource: &'a ImageResource) -> ImageResourceEnumerator<'a> {
+        pub fn try_parse(
+            image_resource: &'a ImageResource,
+        ) -> Result<ImageResourceEnumerator<'a>, PEError> {
+            // Should be a compile-time assert, but Rust doesn't have those yet.
+            debug_assert!(size_of::<_ImageResourceDirectory>() >= 16);
+
+            if image_resource.resource_table_end - image_resource.resource_table_offset
+                < size_of::<_ImageResourceDirectory>()
+            {
+                return Err(PEError::BufferSizeError(
+                    image_resource.resource_table_end - image_resource.resource_table_offset,
+                    0,
+                    size_of::<_ImageResourceDirectory>(),
+                ));
+            }
+
             let buf: &[u8] = &image_resource.image_file
                 [image_resource.resource_table_offset..image_resource.resource_table_end];
-            let num_named_entries = *u16::from_bytes(&buf[12..]).unwrap();
-            let num_id_entries = *u16::from_bytes(&buf[14..]).unwrap();
 
-            ImageResourceEnumerator {
+            let num_named_entries = match u16::ref_from_bytes(&buf[12..(12 + size_of::<u16>())]) {
+                Ok(cch) => *cch,
+                Err(_) => {
+                    return Err(PEError::BufferSizeError(buf.len(), 12, size_of::<u16>()));
+                }
+            };
+
+            let num_id_entries = match u16::ref_from_bytes(&buf[14..(14 + size_of::<u16>())]) {
+                Ok(cch) => *cch,
+                Err(_) => {
+                    return Err(PEError::BufferSizeError(buf.len(), 14, size_of::<u16>()));
+                }
+            };
+
+            Ok(ImageResourceEnumerator {
                 image_resource,
                 current_index: 0,
                 cur_dir: [
@@ -348,6 +395,7 @@ pub mod parser {
                         current_child_index: 0,
                         num_children: num_named_entries + num_id_entries,
                     },
+                    // These two are lazy-initialized when we descend into subdirectories
                     CurrentDirectoryState {
                         id: ResourceIdType::Id(0),
                         directory_offset: 0,
@@ -361,14 +409,14 @@ pub mod parser {
                         num_children: 0,
                     },
                 ],
-            }
+            })
         }
     }
 
     impl<'a> FusedIterator for ImageResourceEnumerator<'a> {}
 
     impl<'a> Iterator for ImageResourceEnumerator<'a> {
-        type Item = Resource<'a>;
+        type Item = Result<Resource<'a>, PEError>;
 
         fn next(&mut self) -> Option<Self::Item> {
             loop {
@@ -397,14 +445,27 @@ pub mod parser {
 
             let cur_offset = offset + size_of::<_ImageResourceDirectoryEntry>() * i as usize;
 
-            let entry = _ImageResourceDirectoryEntry::from_bytes(&buf[cur_offset..]).unwrap();
+            let entry = match _ImageResourceDirectoryEntry::ref_from_prefix(&buf[cur_offset..]) {
+                Ok((entry, _)) => entry,
+                Err(_) => {
+                    return Some(Err(PEError::BufferSizeError(
+                        buf.len(),
+                        cur_offset,
+                        size_of::<_ImageResourceDirectoryEntry>(),
+                    )));
+                }
+            };
 
             let id = if entry.u1.name & 0x8000_0000 != 0 {
                 // entry is a _NamedResourceEntry
 
                 let name_offset = entry.u1.name & 0x7FFF_FFFF;
-                let name = IndexedString::new(buf, name_offset as usize);
-                ResourceIdType::Name(name)
+                match IndexedString::try_parse(buf, name_offset as usize) {
+                    Ok(name) => ResourceIdType::Name(name),
+                    Err(_) => {
+                        return None;
+                    }
+                }
             } else {
                 // entry is a _IdResourceEntry
                 ResourceIdType::Id(entry.u1.name as u16)
@@ -415,7 +476,16 @@ pub mod parser {
                 let offset_to_data_entry = entry.u2.offset as usize;
 
                 let entry_data =
-                    _ImageResourceDataEntry::from_bytes(&buf[offset_to_data_entry..]).unwrap();
+                    match _ImageResourceDataEntry::ref_from_prefix(&buf[offset_to_data_entry..]) {
+                        Ok((entry_data, _)) => entry_data,
+                        Err(_) => {
+                            return Some(Err(PEError::BufferSizeError(
+                                buf.len(),
+                                offset_to_data_entry,
+                                size_of::<_ImageResourceDataEntry>(),
+                            )));
+                        }
+                    };
 
                 let rva_to_data = entry_data.offset_to_data as usize;
                 let data_size = entry_data.size as usize;
@@ -431,7 +501,7 @@ pub mod parser {
                     rsrc_id = self.cur_dir[2].id;
                 }
 
-                Some(Resource {
+                Some(Ok(Resource {
                     name: rsrc_name,
                     id: rsrc_id,
                     data: ResourceData {
@@ -439,17 +509,40 @@ pub mod parser {
                         code_page: entry_data.code_page,
                         buf: data,
                     },
-                })
+                }))
             } else {
                 if self.current_index >= self.cur_dir.len() {
                     panic!("Resource directory nesting is too deep");
                 }
 
                 let offset_to_subdirectory_entry = (entry.u2.offset & 0x7FFF_FFFF) as usize;
-                let num_named_entries: u16 =
-                    *u16::from_bytes(&buf[offset_to_subdirectory_entry + 12..]).unwrap();
-                let num_id_entries: u16 =
-                    *u16::from_bytes(&buf[offset_to_subdirectory_entry + 14..]).unwrap();
+                let num_named_entries: u16 = match u16::ref_from_bytes(
+                    &buf[offset_to_subdirectory_entry + 12
+                        ..(offset_to_subdirectory_entry + 12 + size_of::<u16>())],
+                ) {
+                    Ok(n) => *n,
+                    Err(_) => {
+                        return Some(Err(PEError::BufferSizeError(
+                            buf.len(),
+                            offset_to_subdirectory_entry + 12,
+                            size_of::<u16>(),
+                        )));
+                    }
+                };
+
+                let num_id_entries: u16 = match u16::ref_from_bytes(
+                    &buf[offset_to_subdirectory_entry + 14
+                        ..(offset_to_subdirectory_entry + 14 + size_of::<u16>())],
+                ) {
+                    Ok(n) => *n,
+                    Err(_) => {
+                        return Some(Err(PEError::BufferSizeError(
+                            buf.len(),
+                            offset_to_subdirectory_entry + 14,
+                            size_of::<u16>(),
+                        )));
+                    }
+                };
 
                 self.current_index += 1;
                 self.cur_dir[self.current_index] = CurrentDirectoryState {

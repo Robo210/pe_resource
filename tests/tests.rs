@@ -36,7 +36,9 @@ mod functional {
         let resources =
             parser::find_resource_directory_from_pe("C:\\windows\\system32\\wevtapi.dll")?;
 
-        for resource in &resources {
+        let resource_iter = resources.try_into_iter()?;
+        for resource in resource_iter {
+            let resource = resource?;
             println!(
                 "Enumerated resource: {}/{}/{}",
                 resource.name,
