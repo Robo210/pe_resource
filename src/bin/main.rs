@@ -8,7 +8,6 @@ fn main() -> Result<(), parser::PEError> {
     let resources = parser::find_resource_directory_from_pe(&filename)?;
 
     let pmres_data = resources.find(&"WEVT_TEMPLATE", &"#1")?;
-    // let pmres_resource_data = pmres_data.ok_or(rsrc::PEError::NoResourceTable())?;
 
     println!(
         "pmres header: {:?}",

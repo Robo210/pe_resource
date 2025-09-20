@@ -313,7 +313,7 @@ pub mod parser {
 
         // Since we are lazy-parsing, this can fail if the resource is malformed
         pub fn try_into_iter(&'a self) -> Result<ImageResourceEnumerator<'a>, PEError> {
-            ImageResourceEnumerator::try_parse(&self)
+            ImageResourceEnumerator::try_parse(self)
         }
     }
 
